@@ -1134,12 +1134,424 @@ graph TB
 - **Load Balancing**: Distribuição inteligente de carga entre instâncias
 - **Resource Optimization**: Configuração otimizada de recursos por workload
 
-## Custos e Otimização
+### 8.3 Multi-Region Latency Considerations
 
-### Modelo de Custos por Ambiente
+#### Arquitetura Multi-Região para AgentCore
 
 ```mermaid
-pie title Distribuição de Custos - Ambiente POC
+graph TB
+    subgraph "US-East-1 (Primary)"
+        subgraph "Primary Region Components"
+            AGW_US[AgentCore Gateway US]
+            EKS_US[EKS Cluster US]
+            COG_US[Cognito US]
+            MCP_US[MCP Servers US]
+        end
+        
+        subgraph "US Data Layer"
+            RDS_US[(RDS Primary)]
+            S3_US[(S3 Primary)]
+            CACHE_US[(ElastiCache US)]
+        end
+    end
+    
+    subgraph "EU-West-1 (Secondary)"
+        subgraph "European Region Components"
+            AGW_EU[AgentCore Gateway EU]
+            EKS_EU[EKS Cluster EU]
+            COG_EU[Cognito EU]
+            MCP_EU[MCP Servers EU]
+        end
+        
+        subgraph "EU Data Layer"
+            RDS_EU[(RDS Read Replica)]
+            S3_EU[(S3 Cross-Region)]
+            CACHE_EU[(ElastiCache EU)]
+        end
+    end
+    
+    subgraph "Global Services"
+        R53[Route 53]
+        CF[CloudFront]
+        WAF[AWS WAF]
+    end
+    
+    subgraph "Cross-Region Connectivity"
+        TGW[Transit Gateway]
+        DX[Direct Connect]
+        VPN[VPN Connection]
+    end
+    
+    R53 --> AGW_US
+    R53 --> AGW_EU
+    CF --> AGW_US
+    CF --> AGW_EU
+    
+    AGW_US --> EKS_US
+    AGW_EU --> EKS_EU
+    
+    EKS_US --> MCP_US
+    EKS_EU --> MCP_EU
+    
+    MCP_US --> RDS_US
+    MCP_EU --> RDS_EU
+    
+    RDS_US -.->|Cross-Region Replication| RDS_EU
+    S3_US -.->|Cross-Region Replication| S3_EU
+    
+    TGW -.->|Low Latency| TGW
+    
+    style AGW_US fill:#ff9800
+    style AGW_EU fill:#ff9800
+    style R53 fill:#4caf50
+    style CF fill:#2196f3
+```
+
+#### Estratégias de Redução de Latência
+
+##### 1. **Roteamento Inteligente Baseado em Geolocalização**
+
+```yaml
+# Route 53 Health Check Configuration
+health_checks:
+  us_east_1:
+    endpoint: "https://gateway-us-east-1.agentcore.aws.com/health"
+    type: "HTTPS"
+    resource_path: "/health"
+    failure_threshold: 3
+    request_interval: 30
+    
+  eu_west_1:
+    endpoint: "https://gateway-eu-west-1.agentcore.aws.com/health"
+    type: "HTTPS"
+    resource_path: "/health"
+    failure_threshold: 3
+    request_interval: 30
+
+routing_policies:
+  geolocation:
+    - location: "North America"
+      target: "gateway-us-east-1.agentcore.aws.com"
+      health_check: "us_east_1"
+      
+    - location: "Europe"
+      target: "gateway-eu-west-1.agentcore.aws.com"
+      health_check: "eu_west_1"
+      
+    - location: "Default"
+      target: "gateway-us-east-1.agentcore.aws.com"
+      health_check: "us_east_1"
+```
+
+##### 2. **Cache Distribuído Multi-Região**
+
+```mermaid
+graph LR
+    subgraph "Multi-Region Caching Strategy"
+        subgraph "US Region"
+            AGENT_US[AI Agent US]
+            CACHE_US[ElastiCache US<br/>Redis Cluster]
+            MCP_US[MCP Server US]
+        end
+        
+        subgraph "EU Region"
+            AGENT_EU[AI Agent EU]
+            CACHE_EU[ElastiCache EU<br/>Redis Cluster]
+            MCP_EU[MCP Server EU]
+        end
+        
+        subgraph "Global Cache Layer"
+            CDN[CloudFront CDN]
+            GLOBAL_CACHE[Global Cache<br/>DynamoDB Global Tables]
+        end
+    end
+    
+    AGENT_US --> CACHE_US
+    AGENT_EU --> CACHE_EU
+    
+    CACHE_US -.->|Cache Miss| MCP_US
+    CACHE_EU -.->|Cache Miss| MCP_EU
+    
+    CACHE_US -.->|Cross-Region Sync| CACHE_EU
+    CACHE_EU -.->|Cross-Region Sync| CACHE_US
+    
+    CDN --> CACHE_US
+    CDN --> CACHE_EU
+    
+    GLOBAL_CACHE -.->|Eventual Consistency| CACHE_US
+    GLOBAL_CACHE -.->|Eventual Consistency| CACHE_EU
+    
+    style CDN fill:#ff9800
+    style GLOBAL_CACHE fill:#4caf50
+```
+
+##### 3. **Otimização de Latência por Componente**
+
+| Componente | Latência Alvo | Estratégia de Otimização |
+|------------|---------------|--------------------------|
+| **AgentCore Gateway** | < 50ms | Edge locations, connection pooling |
+| **Authentication** | < 100ms | Token caching, regional Cognito |
+| **MCP Servers** | < 200ms | Regional deployment, warm containers |
+| **Database Queries** | < 150ms | Read replicas, query optimization |
+| **Cross-Region Sync** | < 500ms | Async replication, eventual consistency |
+
+#### Implementação de Latency Monitoring
+
+##### Métricas de Latência Críticas
+
+```yaml
+# CloudWatch Custom Metrics
+latency_metrics:
+  agent_to_gateway:
+    metric_name: "AgentGatewayLatency"
+    unit: "Milliseconds"
+    dimensions:
+      - Region
+      - AgentType
+      - ClientID
+    alarm_threshold: 100
+    
+  gateway_to_mcp:
+    metric_name: "GatewayMCPLatency"
+    unit: "Milliseconds"
+    dimensions:
+      - Region
+      - MCPServer
+      - Operation
+    alarm_threshold: 200
+    
+  cross_region_sync:
+    metric_name: "CrossRegionSyncLatency"
+    unit: "Milliseconds"
+    dimensions:
+      - SourceRegion
+      - TargetRegion
+      - DataType
+    alarm_threshold: 1000
+
+# X-Ray Tracing Configuration
+xray_tracing:
+  sampling_rate: 0.1
+  service_map: true
+  trace_segments:
+    - "AgentCore-Gateway"
+    - "MCP-Servers"
+    - "Authentication-Service"
+    - "Database-Layer"
+```
+
+##### Dashboard de Latência Multi-Região
+
+```mermaid
+graph TB
+    subgraph "Latency Monitoring Dashboard"
+        subgraph "Real-Time Metrics"
+            RTM1[Agent → Gateway<br/>P50: 45ms, P99: 120ms]
+            RTM2[Gateway → MCP<br/>P50: 80ms, P99: 250ms]
+            RTM3[Cross-Region Sync<br/>P50: 300ms, P99: 800ms]
+        end
+        
+        subgraph "Regional Performance"
+            RP1[US-East-1<br/>Avg: 65ms]
+            RP2[EU-West-1<br/>Avg: 72ms]
+            RP3[AP-Southeast-1<br/>Avg: 95ms]
+        end
+        
+        subgraph "Alerts & Actions"
+            ALERT1[High Latency Alert<br/>Threshold: 200ms]
+            ALERT2[Region Failover<br/>Auto-trigger]
+            ALERT3[Scaling Event<br/>Auto-scale]
+        end
+    end
+    
+    RTM1 --> ALERT1
+    RTM2 --> ALERT2
+    RTM3 --> ALERT3
+    
+    RP1 --> ALERT2
+    RP2 --> ALERT2
+    RP3 --> ALERT3
+    
+    style RTM1 fill:#4caf50
+    style RTM2 fill:#ff9800
+    style RTM3 fill:#f44336
+```
+
+#### Estratégias de Failover e Disaster Recovery
+
+##### 1. **Failover Automático Baseado em Latência**
+
+```python
+# Exemplo de lógica de failover baseada em latência
+class LatencyBasedFailover:
+    def __init__(self):
+        self.latency_thresholds = {
+            'warning': 200,  # ms
+            'critical': 500,  # ms
+            'failover': 1000  # ms
+        }
+        self.region_priorities = [
+            'us-east-1',
+            'eu-west-1', 
+            'ap-southeast-1'
+        ]
+    
+    def check_and_failover(self, current_region, latency_ms):
+        if latency_ms > self.latency_thresholds['failover']:
+            return self.get_next_region(current_region)
+        return current_region
+    
+    def get_next_region(self, current_region):
+        try:
+            current_index = self.region_priorities.index(current_region)
+            next_index = (current_index + 1) % len(self.region_priorities)
+            return self.region_priorities[next_index]
+        except ValueError:
+            return self.region_priorities[0]
+```
+
+##### 2. **Circuit Breaker Pattern para MCP Servers**
+
+```yaml
+# Circuit Breaker Configuration
+circuit_breaker:
+  failure_threshold: 5
+  timeout: 30000  # 30 seconds
+  reset_timeout: 60000  # 60 seconds
+  
+  per_region_config:
+    us_east_1:
+      max_concurrent_requests: 100
+      latency_threshold: 200
+      
+    eu_west_1:
+      max_concurrent_requests: 80
+      latency_threshold: 250
+      
+    ap_southeast_1:
+      max_concurrent_requests: 60
+      latency_threshold: 300
+```
+
+#### Otimizações Específicas por Região
+
+##### Configuração Regional Otimizada
+
+```yaml
+# Regional Configuration Template
+regional_config:
+  us_east_1:
+    instance_types: ["m6i.large", "c6i.xlarge"]
+    availability_zones: 3
+    auto_scaling:
+      min_capacity: 2
+      max_capacity: 20
+      target_cpu: 70
+    
+  eu_west_1:
+    instance_types: ["m6i.large", "c6i.xlarge"] 
+    availability_zones: 3
+    auto_scaling:
+      min_capacity: 1
+      max_capacity: 15
+      target_cpu: 70
+      
+  ap_southeast_1:
+    instance_types: ["m6i.medium", "c6i.large"]
+    availability_zones: 2
+    auto_scaling:
+      min_capacity: 1
+      max_capacity: 10
+      target_cpu: 75
+
+# Network Optimization
+network_optimization:
+  enhanced_networking: true
+  placement_groups: true
+  dedicated_tenancy: false
+  
+  inter_region_connectivity:
+    transit_gateway: true
+    direct_connect: true
+    vpn_backup: true
+```
+
+#### Considerações de Compliance Multi-Região
+
+##### Data Residency e Sovereignty
+
+```mermaid
+graph TB
+    subgraph "Data Residency Compliance"
+        subgraph "GDPR - EU Data"
+            EU_DATA[EU Customer Data]
+            EU_PROCESSING[EU Processing Only]
+            EU_STORAGE[EU Storage Only]
+        end
+        
+        subgraph "US Data Regulations"
+            US_DATA[US Customer Data]
+            US_PROCESSING[US Processing Allowed]
+            US_STORAGE[US Storage Allowed]
+        end
+        
+        subgraph "Cross-Border Controls"
+            ENCRYPTION[Data Encryption]
+            TOKENIZATION[Data Tokenization]
+            PSEUDONYMIZATION[Data Pseudonymization]
+        end
+    end
+    
+    EU_DATA --> EU_PROCESSING
+    EU_DATA --> EU_STORAGE
+    EU_DATA --> ENCRYPTION
+    
+    US_DATA --> US_PROCESSING
+    US_DATA --> US_STORAGE
+    US_DATA --> TOKENIZATION
+    
+    ENCRYPTION --> PSEUDONYMIZATION
+    TOKENIZATION --> PSEUDONYMIZATION
+    
+    style EU_DATA fill:#4caf50
+    style US_DATA fill:#2196f3
+    style ENCRYPTION fill:#ff9800
+```
+
+#### Custos Multi-Região
+
+##### Modelo de Custos por Região
+
+```mermaid
+pie title Distribuição de Custos Multi-Região
+    "US-East-1 (Primary)" : 45
+    "EU-West-1 (Secondary)" : 30
+    "Cross-Region Data Transfer" : 15
+    "Global Services (Route53, CloudFront)" : 10
+```
+
+##### Otimização de Custos Cross-Region
+
+- **Data Transfer Optimization**: Compressão e deduplicação
+- **Regional Pricing**: Aproveitamento de preços regionais
+- **Reserved Instances**: Reserva multi-região para workloads previsíveis
+- **Spot Instances**: Uso inteligente para workloads tolerantes a interrupção
+
+#### Melhores Práticas Multi-Região
+
+1. **Design for Failure**: Assumir que falhas regionais vão ocorrer
+2. **Eventual Consistency**: Aceitar consistência eventual para melhor performance
+3. **Regional Autonomy**: Cada região deve operar independentemente
+4. **Data Locality**: Manter dados próximos aos usuários
+5. **Monitoring Proativo**: Monitoramento contínuo de latência e disponibilidade
+6. **Testing Regular**: Testes regulares de failover e disaster recovery
+
+## Custos e Otimização
+
+### Modelo de Custos por Ambiente e Região
+
+```mermaid
+pie title Distribuição de Custos - Ambiente POC (Single Region)
     "AgentCore Runtime" : 45
     "Amazon Cognito" : 15
     "Data Transfer" : 20
@@ -1148,131 +1560,177 @@ pie title Distribuição de Custos - Ambiente POC
 ```
 
 ```mermaid
-pie title Distribuição de Custos - Ambiente Produção
-    "EKS Control Plane" : 5
-    "EC2 Instances" : 50
-    "Fargate" : 25
-    "Load Balancers" : 8
-    "Storage" : 7
-    "Data Transfer" : 5
+pie title Distribuição de Custos - Ambiente Produção (Multi-Region)
+    "EKS Control Plane (Multi-Region)" : 8
+    "EC2 Instances (Primary + Secondary)" : 45
+    "Fargate (Multi-Region)" : 20
+    "Cross-Region Data Transfer" : 12
+    "Load Balancers & Global Services" : 8
+    "Storage (Multi-Region)" : 7
 ```
 
-### Estratégia de Otimização de Custos
+### Estratégia de Otimização de Custos Multi-Região
 
 ```mermaid
 graph TD
     subgraph "Cost Optimization Strategy"
-        SPOT[Spot Instances<br/>70% savings]
-        RESERVED[Reserved Instances<br/>40% savings]
-        AUTOSCALE[Auto Scaling<br/>30% savings]
-        RIGHTSIZING[Right Sizing<br/>25% savings]
+        subgraph "Regional Optimization"
+            SPOT[Spot Instances<br/>70% savings]
+            RESERVED[Reserved Instances<br/>40% savings]
+            REGIONAL_PRICING[Regional Pricing<br/>15% variance]
+        end
+        
+        subgraph "Data Transfer Optimization"
+            COMPRESSION[Data Compression<br/>60% reduction]
+            CACHING[Regional Caching<br/>80% reduction]
+            CDN[CloudFront CDN<br/>50% reduction]
+        end
+        
+        subgraph "Monitoring & Control"
+            BUDGET[AWS Budgets<br/>Multi-Region]
+            COST[Cost Explorer<br/>Regional Analysis]
+            TAGS[Resource Tagging<br/>Region + Environment]
+        end
     end
     
-    subgraph "Monitoring & Alerts"
-        BUDGET[AWS Budgets]
-        COST[Cost Explorer]
-        TAGS[Resource Tagging]
+    subgraph "Workload Distribution"
+        PRIMARY[Primary Region<br/>100% Traffic]
+        SECONDARY[Secondary Region<br/>Standby + DR]
+        TERTIARY[Tertiary Region<br/>Development]
     end
     
-    subgraph "Workload Types"
-        DEV[Development<br/>Spot Instances]
-        TEST[Testing<br/>On-Demand]
-        PROD[Production<br/>Reserved + Spot]
-    end
+    SPOT --> SECONDARY
+    RESERVED --> PRIMARY
+    REGIONAL_PRICING --> TERTIARY
     
-    SPOT --> DEV
-    RESERVED --> PROD
-    AUTOSCALE --> TEST
-    RIGHTSIZING --> PROD
+    COMPRESSION --> PRIMARY
+    CACHING --> SECONDARY
+    CDN --> PRIMARY
     
     BUDGET --> COST
     COST --> TAGS
-    TAGS --> DEV
-    TAGS --> TEST
-    TAGS --> PROD
+    TAGS --> PRIMARY
+    TAGS --> SECONDARY
+    TAGS --> TERTIARY
     
-    style SPOT fill:#4caf50
+    style COMPRESSION fill:#4caf50
     style RESERVED fill:#2196f3
-    style AUTOSCALE fill:#ff9800
-    style RIGHTSIZING fill:#9c27b0
+    style CDN fill:#ff9800
+    style CACHING fill:#9c27b0
 ```
 
-### 9.1 Modelo de Custos
+### 9.1 Modelo de Custos Multi-Região
 
-**POC Environment:**
-- AgentCore Runtime: $0.10/hora por instância ativa
-- Cognito: $0.0055 por MAU (Monthly Active User)
-- Data Transfer: $0.09/GB
-
-**Production Environment:**
+**Região Primária (US-East-1):**
 - EKS Control Plane: $0.10/hora
-- EC2 Instances: Variável baseado no tipo de instância
+- EC2 Instances: Variável baseado no tipo (m6i.large: $0.0864/hora)
 - Fargate: $0.04048/vCPU/hora + $0.004445/GB/hora
-- Load Balancer: $0.0225/hora
+- Data Transfer OUT: $0.09/GB (primeiros 10TB)
 
-### 9.2 Estratégias de Otimização
+**Região Secundária (EU-West-1):**
+- EKS Control Plane: $0.10/hora
+- EC2 Instances: Preço regional (m6i.large: $0.0922/hora - 6.7% mais caro)
+- Cross-Region Data Transfer: $0.02/GB (entre regiões AWS)
+- Storage Replication: Custos adicionais de sincronização
 
-- **Spot Instances**: Uso de instâncias spot para workloads tolerantes a interrupção
-- **Reserved Instances**: Reserva de capacidade para cargas previsíveis
-- **Auto Scaling**: Dimensionamento automático baseado em demanda
-- **Resource Tagging**: Rastreamento detalhado de custos por projeto/ambiente
+**Serviços Globais:**
+- Route 53: $0.50/hosted zone + $0.40/milhão de queries
+- CloudFront: $0.085/GB (primeiros 10TB) + $0.0075/10.000 requests
+- AWS WAF: $1.00/web ACL + $0.60/milhão de requests
+
+### 9.2 Estratégias de Otimização Multi-Região
+
+#### Otimização de Data Transfer
+- **Compressão**: Redução de 60-80% no volume de dados transferidos
+- **Deduplicação**: Eliminação de dados duplicados na sincronização
+- **Delta Sync**: Sincronização apenas de mudanças incrementais
+- **Regional Caching**: Cache local para reduzir transferências
+
+#### Otimização de Instâncias
+- **Spot Instances**: Uso em regiões secundárias para standby (70% economia)
+- **Reserved Instances**: Reserva multi-região para workloads previsíveis
+- **Right Sizing**: Dimensionamento otimizado por região baseado na demanda
+- **Scheduled Scaling**: Escalonamento baseado em padrões de uso regional
+
+#### Otimização de Storage
+- **Intelligent Tiering**: S3 Intelligent Tiering para otimização automática
+- **Cross-Region Replication**: Replicação seletiva baseada em criticidade
+- **Lifecycle Policies**: Políticas de ciclo de vida regionais
+- **Compression at Rest**: Compressão de dados em repouso
 
 ## Roadmap de Implementação
 
 ```mermaid
 gantt
-    title Roadmap de Implementação - Fundação MCP & AI Agents
+    title Roadmap de Implementação - Fundação MCP & AI Agents Multi-Região
     dateFormat  YYYY-MM-DD
-    section Fase 1: Fundação
+    section Fase 1: Fundação Single-Region
     Setup AgentCore Gateway           :active, f1-1, 2025-01-02, 1w
     Configuração Cognito             :f1-2, after f1-1, 1w
     Deploy MCP Servers               :f1-3, after f1-2, 1w
     Ambiente POC                     :f1-4, after f1-3, 1w
     
-    section Fase 2: Produção
+    section Fase 2: Produção Single-Region
     Configuração EKS                 :f2-1, after f1-4, 1w
     Implementação Keycloak           :f2-2, after f2-1, 1w
     Migração Agents EKS              :f2-3, after f2-2, 1w
     Setup Monitoramento              :f2-4, after f2-3, 1w
     
-    section Fase 3: Otimização
-    Implementação Caching            :f3-1, after f2-4, 1w
-    Otimização Performance           :f3-2, after f3-1, 1w
-    Multi-região                     :f3-3, after f3-2, 1w
-    CI/CD Automação                  :f3-4, after f3-3, 1w
+    section Fase 3: Multi-Região
+    Região Secundária Setup          :f3-1, after f2-4, 1w
+    Cross-Region Replication         :f3-2, after f3-1, 1w
+    Latency Optimization             :f3-3, after f3-2, 1w
+    Failover Automation              :f3-4, after f3-3, 1w
     
-    section Fase 4: Governança
-    Políticas Segurança              :f4-1, after f3-4, 1w
-    Compliance & Auditoria           :f4-2, after f4-1, 1w
-    Documentação                     :f4-3, after f4-2, 1w
-    Treinamento                      :f4-4, after f4-3, 1w
+    section Fase 4: Otimização Global
+    Global Load Balancing            :f4-1, after f3-4, 1w
+    Multi-Region Caching             :f4-2, after f4-1, 1w
+    Cost Optimization                :f4-3, after f4-2, 1w
+    Performance Tuning               :f4-4, after f4-3, 1w
+    
+    section Fase 5: Governança
+    Políticas Segurança              :f5-1, after f4-4, 1w
+    Compliance Multi-Região          :f5-2, after f5-1, 1w
+    Documentação                     :f5-3, after f5-2, 1w
+    Treinamento                      :f5-4, after f5-3, 1w
 ```
 
 ### Detalhamento das Fases
 
-### Fase 1: Fundação (Semanas 1-4)
-- [ ] Setup do AgentCore Gateway
+### Fase 1: Fundação Single-Region (Semanas 1-4)
+- [ ] Setup do AgentCore Gateway na região primária
 - [ ] Configuração básica do Cognito
 - [ ] Deploy de MCP servers de exemplo
 - [ ] Ambiente de POC funcional
+- [ ] Baseline de métricas de latência
 
-### Fase 2: Produção (Semanas 5-8)
-- [ ] Configuração do cluster EKS
+### Fase 2: Produção Single-Region (Semanas 5-8)
+- [ ] Configuração do cluster EKS na região primária
 - [ ] Implementação do Keycloak
 - [ ] Migração de agents para EKS
-- [ ] Configuração de monitoramento
+- [ ] Configuração de monitoramento e alertas
+- [ ] Estabelecimento de SLAs de latência
 
-### Fase 3: Otimização (Semanas 9-12)
-- [ ] Implementação de caching
-- [ ] Otimização de performance
-- [ ] Configuração de multi-região
-- [ ] Automação completa de CI/CD
+### Fase 3: Multi-Região (Semanas 9-12)
+- [ ] Setup da região secundária (EU-West-1)
+- [ ] Configuração de cross-region replication
+- [ ] Implementação de otimizações de latência
+- [ ] Configuração de failover automático
+- [ ] Testes de disaster recovery
 
-### Fase 4: Governança (Semanas 13-16)
-- [ ] Políticas de segurança avançadas
-- [ ] Compliance e auditoria
-- [ ] Documentação completa
-- [ ] Treinamento de equipes
+### Fase 4: Otimização Global (Semanas 13-16)
+- [ ] Implementação de global load balancing
+- [ ] Setup de caching multi-região
+- [ ] Otimização de custos cross-region
+- [ ] Fine-tuning de performance
+- [ ] Implementação de circuit breakers
+
+### Fase 5: Governança (Semanas 17-20)
+- [ ] Políticas de segurança multi-região
+- [ ] Compliance e data residency
+- [ ] Documentação completa multi-região
+- [ ] Treinamento de equipes em operações globais
+- [ ] Runbooks para operações multi-região
 
 ## Referências Técnicas
 
