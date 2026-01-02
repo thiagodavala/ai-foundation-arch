@@ -187,25 +187,33 @@ graph TD
         end
         
         subgraph "Cenário B2B - Business Integration"
-            B2B --> PARTNER[Sistema Parceiro/Cliente]
+            B2B --> B2B_TYPE{Tipo de Cliente?}
+            B2B_TYPE -->|Sistema Parceiro| PARTNER[Sistema Parceiro/Cliente]
+            B2B_TYPE -->|Agente de Terceiros| THIRD_PARTY[ChatGPT Apps, Claude, etc]
+            
             PARTNER --> BFF_B2B[Backend for Frontend<br/>B2B]
             BFF_B2B --> AGENT_B2B{Agent Complexity?}
             AGENT_B2B -->|Complex Logic| EKS_B2B[Agent no EKS]
             AGENT_B2B -->|Simple Logic| RUNTIME_B2B[Agent no AgentCore Runtime]
-            EKS_B2B --> DECISION_B2B{MCP Access Pattern?}
-            RUNTIME_B2B --> DECISION_B2B
-            DECISION_B2B -->|Via Gateway| GATEWAY_B2B[AgentCore Gateway]
-            DECISION_B2B -->|Direct Access| DIRECT_MCP[Direct MCP Access]
+            EKS_B2B --> GATEWAY_B2B[AgentCore Gateway]
+            RUNTIME_B2B --> GATEWAY_B2B
+            
+            THIRD_PARTY --> AUTH_THIRD[Autenticação<br/>OAuth/API Key]
+            AUTH_THIRD --> GATEWAY_THIRD[Acesso Direto<br/>AgentCore Gateway]
+            
             GATEWAY_B2B --> MCP_B2B[MCPs no Runtime]
+            GATEWAY_THIRD --> MCP_B2B
         end
     end
     
     style INTERNO fill:#4caf50
     style B2C fill:#2196f3
     style B2B fill:#ff9800
+    style THIRD_PARTY fill:#9c27b0
     style KEYCLOAK_DCR fill:#9c27b0
     style BFF_B2C fill:#e91e63
     style BFF_B2B fill:#e91e63
+    style AUTH_THIRD fill:#795548
 ```
 
 ### Detalhamento dos Cenários Arquiteturais
@@ -276,54 +284,93 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant PARTNER as Sistema Parceiro
+    participant THIRD_PARTY as Agente de Terceiros<br/>(ChatGPT, Claude, etc)
     participant API as API B2B
     participant BFF as BFF B2B
-    participant AGENT as AI Agent
-    participant DECISION as Decision Point
+    participant AGENT as AI Agent Interno
     participant AGW as AgentCore Gateway
     participant MCP as MCP Server
     
-    Note over PARTNER, MCP: Cenário B2B - Flexível
-    PARTNER->>API: API Call
-    API->>BFF: Request autenticado
-    BFF->>AGENT: Business logic request
-    AGENT->>DECISION: Avalia necessidade MCP
+    Note over PARTNER, MCP: Cenário B2B - Múltiplos Pontos de Entrada
     
-    alt Via Gateway
-        DECISION->>AGW: Request via Gateway
+    rect rgb(200, 230, 255)
+        Note over PARTNER, AGENT: Fluxo Sistema Parceiro
+        PARTNER->>API: API Call
+        API->>BFF: Request autenticado
+        BFF->>AGENT: Business logic request
+        AGENT->>AGW: Request para AgentCore Gateway
         AGW->>MCP: Processa request
         MCP->>AGW: Response
-        AGW->>DECISION: Response
-    else Direct Access
-        DECISION->>MCP: Direct MCP access
-        MCP->>DECISION: Direct response
+        AGW->>AGENT: Response
+        AGENT->>BFF: Processed response
+        BFF->>API: Business response
+        API->>PARTNER: Final response
     end
     
-    DECISION->>AGENT: Response
-    AGENT->>BFF: Processed response
-    BFF->>API: Business response
-    API->>PARTNER: Final response
+    rect rgb(255, 230, 200)
+        Note over THIRD_PARTY, MCP: Fluxo Agente de Terceiros
+        THIRD_PARTY->>AGW: Direct MCP Request (OAuth/API Key)
+        AGW->>AGW: Valida credenciais de terceiros
+        AGW->>MCP: Processa request
+        MCP->>AGW: Response
+        AGW->>THIRD_PARTY: Response direta
+    end
 ```
 
-**Características do Cenário B2B:**
-- **Usuários**: Sistemas empresariais, parceiros
-- **Arquitetura**: Flexível - com ou sem gateway
+**Características do Cenário B2B Expandido:**
+- **Usuários**: Sistemas empresariais, parceiros, **agentes de terceiros**
+- **Arquitetura Principal**: Sistema → BFF → Agent → Gateway → MCP
+- **Arquitetura Terceiros**: Agente Terceiro → Gateway → MCP (acesso direto ao gateway)
 - **Agent Location**: EKS (lógica complexa) ou AgentCore Runtime (lógica simples)
-- **Padrões de Acesso**: Via Gateway ou acesso direto aos MCPs
-- **Casos de Uso**: Integrações ERP, APIs empresariais, automação B2B
+- **Acesso aos MCPs**: Sempre via AgentCore Gateway
+- **Casos de Uso**: Integrações ERP, APIs empresariais, **ChatGPT Apps, Claude Apps, agentes externos**
 
 ### Matriz de Decisão Detalhada
 
-| Critério | Interno | B2C | B2B |
-|----------|---------|-----|-----|
-| **Autenticação** | Keycloak DCR | Cognito M2M | Cognito M2M |
-| **Ponto de Entrada** | Direto no Gateway | BFF | BFF |
-| **Agent Hosting** | N/A | EKS/Runtime | EKS/Runtime |
-| **MCP Access** | Via Gateway | Via Gateway | Gateway/Direto |
-| **Escalabilidade** | Baixa-Média | Alta | Média-Alta |
-| **Complexidade** | Baixa | Média | Alta |
-| **Latência Alvo** | < 500ms | < 200ms | < 300ms |
-| **Casos de Uso** | Dev Tools, Debug | Apps Consumer | Enterprise APIs |
+| Critério | Interno | B2C | B2B Parceiros | B2B Terceiros |
+|----------|---------|-----|---------------|---------------|
+| **Autenticação** | Keycloak DCR | Cognito M2M | Cognito M2M | OAuth2/API Key |
+| **Ponto de Entrada** | Direto no Gateway | BFF | BFF | Direto no Gateway |
+| **Agent Hosting** | N/A | EKS/Runtime | EKS/Runtime | Externo |
+| **MCP Access** | Via Gateway | Via Gateway | Via Gateway | Via Gateway |
+| **Escalabilidade** | Baixa-Média | Alta | Média-Alta | Alta |
+| **Complexidade** | Baixa | Média | Alta | Média |
+| **Latência Alvo** | < 500ms | < 200ms | < 300ms | < 400ms |
+| **Rate Limiting** | 1000/min | 10000/hour | 10000/day | 1000/hour |
+| **Permissões** | Full Access | App Specific | Tenant Specific | Limited Access |
+| **Casos de Uso** | Dev Tools, Debug | Apps Consumer | Enterprise APIs | ChatGPT Apps, Claude |
+
+### Configurações por Cenário Expandido
+
+#### Configuração B2B Terceiros
+```yaml
+b2b_third_party_scenario:
+  authentication:
+    primary: "oauth2_client_credentials"
+    fallback: "api_key_jwt"
+    registration: "manual_approval"
+  
+  access_control:
+    permissions: "limited"
+    operations: ["read", "limited_write"]
+    admin_access: false
+  
+  rate_limiting:
+    default: "1000/hour"
+    burst: "50/minute"
+    premium_tier: "5000/hour"
+  
+  monitoring:
+    audit_level: "detailed"
+    metrics_collection: true
+    alert_on_anomalies: true
+  
+  supported_clients:
+    - "openai_chatgpt"
+    - "anthropic_claude"
+    - "custom_agents"
+    - "automation_tools"
+```
 
 ### Configurações por Cenário
 
@@ -418,17 +465,26 @@ graph TB
     end
     
     subgraph "Cenário B2B - Enterprise Integration"
-        ENTERPRISE[Sistemas Empresariais<br/>ERP, CRM, APIs]
-        BFF_B2B[BFF B2B<br/>Enterprise API Layer]
-        AGENTS_B2B[AI Agents<br/>EKS ou AgentCore Runtime]
-        DECISION_B2B{Gateway ou<br/>Acesso Direto?}
-        AGW_B2B[AgentCore Gateway<br/>Opcional]
+        subgraph "Sistemas Parceiros"
+            ENTERPRISE[Sistemas Empresariais<br/>ERP, CRM, APIs]
+            BFF_B2B[BFF B2B<br/>Enterprise API Layer]
+            AGENTS_B2B[AI Agents<br/>EKS ou AgentCore Runtime]
+        end
+        
+        subgraph "Agentes de Terceiros"
+            CHATGPT[ChatGPT Apps]
+            CLAUDE[Claude Apps]
+            OTHER_AGENTS[Outros Agentes<br/>Externos]
+        end
+        
+        AGW_B2B[AgentCore Gateway<br/>Multi-Client Support]
         MCP_B2B[MCP Servers<br/>AgentCore Runtime]
     end
     
     subgraph "Camada de Autenticação"
         KC[Keycloak<br/>DCR para Interno]
         COG[Amazon Cognito<br/>M2M para B2C/B2B]
+        THIRD_PARTY_AUTH[Third-Party Auth<br/>OAuth/API Keys]
     end
     
     subgraph "Infraestrutura AWS"
@@ -448,18 +504,24 @@ graph TB
     AGENTS_B2C --> AGW_B2C
     AGW_B2C --> MCP_B2C
     
-    %% Fluxos Cenário B2B
+    %% Fluxos Cenário B2B - Sistemas Parceiros
     ENTERPRISE --> BFF_B2B
     BFF_B2B --> AGENTS_B2B
-    AGENTS_B2B --> DECISION_B2B
-    DECISION_B2B -->|Via Gateway| AGW_B2B
-    DECISION_B2B -->|Direto| MCP_B2B
+    AGENTS_B2B --> AGW_B2B
+    
+    %% Fluxos Cenário B2B - Agentes de Terceiros
+    CHATGPT --> THIRD_PARTY_AUTH
+    CLAUDE --> THIRD_PARTY_AUTH
+    OTHER_AGENTS --> THIRD_PARTY_AUTH
+    THIRD_PARTY_AUTH --> AGW_B2B
+    
     AGW_B2B --> MCP_B2B
     
     %% Conexões com Infraestrutura
     KC_INTERNAL -.-> KC
     BFF_B2C -.-> COG
     BFF_B2B -.-> COG
+    THIRD_PARTY_AUTH -.-> COG
     
     AGENTS_B2C -.-> EKS
     AGENTS_B2B -.-> EKS
@@ -473,23 +535,27 @@ graph TB
     style DEV_TOOLS fill:#4caf50
     style CONSUMER_APPS fill:#2196f3
     style ENTERPRISE fill:#ff9800
+    style CHATGPT fill:#9c27b0
+    style CLAUDE fill:#9c27b0
+    style OTHER_AGENTS fill:#9c27b0
     style BFF_B2C fill:#e91e63
     style BFF_B2B fill:#e91e63
     style KC_INTERNAL fill:#9c27b0
+    style THIRD_PARTY_AUTH fill:#795548
 ```
 
-### Comparativo dos Cenários
+### Comparativo dos Cenários Expandido
 
-| Aspecto | Interno | B2C | B2B |
-|---------|---------|-----|-----|
-| **Complexidade** | Baixa | Média | Alta |
-| **Usuários** | Desenvolvedores | Consumidores | Empresas |
-| **Autenticação** | Keycloak DCR | Cognito M2M | Cognito M2M |
-| **BFF** | Não necessário | Obrigatório | Obrigatório |
-| **Agent Location** | N/A | EKS/Runtime | EKS/Runtime |
-| **Gateway** | Sempre | Sempre | Opcional |
-| **Escalabilidade** | Baixa | Alta | Variável |
-| **Latência** | Tolerante | Crítica | Moderada |
+| Aspecto | Interno | B2C | B2B Parceiros | B2B Terceiros |
+|---------|---------|-----|---------------|---------------|
+| **Complexidade** | Baixa | Média | Alta | Média |
+| **Usuários** | Desenvolvedores | Consumidores | Empresas | Agentes IA |
+| **Autenticação** | Keycloak DCR | Cognito M2M | Cognito M2M | OAuth/API Key |
+| **BFF** | Não necessário | Obrigatório | Obrigatório | Não necessário |
+| **Agent Location** | N/A | EKS/Runtime | EKS/Runtime | Externo |
+| **Gateway** | Sempre | Sempre | Sempre | Sempre |
+| **Escalabilidade** | Baixa | Alta | Variável | Alta |
+| **Latência** | Tolerante | Crítica | Moderada | Moderada |
 
 ## Componentes Principais
 
@@ -1163,10 +1229,93 @@ Para a comunicação entre agentes e o gateway, o Client Credentials Grant (RFC 
 }
 ```
 
-**Vantagens da Abordagem Dual:**
-- **Separação de Responsabilidades**: DCR para flexibilidade de distribuição, Client Credentials para M2M confiável
-- **Segurança Otimizada**: Credenciais gerenciadas centralmente para agentes, registro dinâmico para clientes
-- **Escalabilidade**: Cognito otimizado para M2M em alta escala, Keycloak para flexibilidade de registro
+### 4.3 Autenticação para Agentes de Terceiros (B2B)
+
+**Casos de Uso Específicos:**
+- ChatGPT Apps que precisam acessar MCPs empresariais
+- Claude Apps integradas com sistemas internos
+- Agentes de IA de terceiros (Anthropic, OpenAI, outros)
+- Ferramentas de automação externas
+
+**Estratégias de Autenticação:**
+
+#### Opção 1: OAuth 2.0 Client Credentials (Recomendado)
+```yaml
+third_party_oauth:
+  grant_type: "client_credentials"
+  authentication_method: "client_secret_post"
+  token_endpoint: "https://cognito-oauth.amazonaws.com/oauth2/token"
+  
+  client_registration:
+    method: "manual"  # Registro manual por segurança
+    approval_process: "admin_approval"
+    
+  scopes:
+    - "mcp:read"
+    - "mcp:write:limited"  # Escopo limitado para terceiros
+    
+  rate_limiting:
+    requests_per_hour: 1000
+    burst_capacity: 50
+```
+
+#### Opção 2: API Keys com JWT
+```yaml
+third_party_api_keys:
+  key_format: "jwt"
+  expiration: "30_days"
+  rotation: "automatic"
+  
+  permissions:
+    - "mcp_access"
+    - "read_only"  # Padrão conservador
+    
+  validation:
+    signature_verification: true
+    audience_check: true
+    issuer_validation: true
+```
+
+#### Fluxo de Autenticação para Terceiros
+
+```mermaid
+sequenceDiagram
+    participant THIRD as Agente de Terceiros
+    participant REG as Registration Service
+    participant COG as Amazon Cognito
+    participant AGW as AgentCore Gateway
+    participant MCP as MCP Server
+    
+    Note over THIRD, MCP: Registro e Autenticação de Terceiros
+    
+    rect rgb(255, 240, 240)
+        Note over THIRD, COG: Processo de Registro (One-time)
+        THIRD->>REG: Solicitação de Registro
+        REG->>REG: Validação e Aprovação Manual
+        REG->>COG: Cria Client Credentials
+        COG->>REG: Client ID + Secret
+        REG->>THIRD: Credenciais de Acesso
+    end
+    
+    rect rgb(240, 255, 240)
+        Note over THIRD, MCP: Fluxo de Acesso (Runtime)
+        THIRD->>COG: Client Credentials Grant
+        COG->>COG: Valida Credenciais
+        COG->>THIRD: Access Token JWT
+        THIRD->>AGW: MCP Request + Token
+        AGW->>COG: Token Validation
+        COG->>AGW: Token Valid + Claims
+        AGW->>MCP: Authorized Request
+        MCP->>AGW: Response
+        AGW->>THIRD: Final Response
+    end
+```
+
+### Vantagens da Abordagem Multi-Modal:**
+- **Flexibilidade**: Diferentes métodos para diferentes tipos de terceiros
+- **Segurança**: Controle granular de permissões por cliente
+- **Auditoria**: Rastreamento completo de acessos de terceiros
+- **Escalabilidade**: Suporte a múltiplos agentes simultâneos
 
 ## Implementação Detalhada por Cenário
 
@@ -1320,33 +1469,78 @@ b2b_bff:
     sanitization: true
 ```
 
+#### Third-Party Agents Configuration
+```yaml
+# Third-Party Agents Access Configuration
+third_party_config:
+  supported_agents:
+    - name: "chatgpt_apps"
+      authentication: "oauth2_client_credentials"
+      rate_limit: "1000/hour"
+      scopes: ["mcp:read", "mcp:write:limited"]
+      
+    - name: "claude_apps"
+      authentication: "oauth2_client_credentials"
+      rate_limit: "1500/hour"
+      scopes: ["mcp:read", "mcp:write:limited"]
+      
+    - name: "custom_agents"
+      authentication: "api_key_jwt"
+      rate_limit: "500/hour"
+      scopes: ["mcp:read"]
+  
+  security_controls:
+    ip_whitelist: true
+    request_signing: true
+    audit_logging: "detailed"
+    
+  gateway_routing:
+    path_prefix: "/third-party"
+    cors_enabled: true
+    timeout: "30s"
+```
+
 #### Agent Configuration for B2B
 ```yaml
-# B2B Agent Configuration
+# B2B Agent Configuration (Internal + Third-Party)
 b2b_agents:
-  deployment_strategy:
-    simple_logic: "agentcore_runtime"
-    complex_logic: "eks"
+  internal_agents:
+    deployment_strategy:
+      simple_logic: "agentcore_runtime"
+      complex_logic: "eks"
+    
+    agent_types:
+      - name: "integration-processor"
+        runtime: "eks"
+        scaling: "manual"
+        resources:
+          cpu: "2"
+          memory: "4Gi"
+        
+      - name: "data-transformer"
+        runtime: "agentcore"
+        scaling: "auto"
+        max_instances: 5
   
-  agent_types:
-    - name: "integration-processor"
-      runtime: "eks"
-      scaling: "manual"
-      resources:
-        cpu: "2"
-        memory: "4Gi"
-      
-    - name: "data-transformer"
-      runtime: "agentcore"
-      scaling: "auto"
-      max_instances: 5
+  third_party_access:
+    gateway_endpoint: "agentcore_gateway"
+    authentication_required: true
+    operations_allowed:
+      - "tools/list"
+      - "tools/call"
+      - "resources/read"
+    
+    restrictions:
+      - "no_admin_operations"
+      - "read_only_resources"
+      - "limited_tool_execution"
   
-  mcp_access_patterns:
-    gateway_mediated:
+  mcp_access:
+    method: "via_gateway"
+    gateway_endpoint: "agentcore_gateway"
+    operations:
       - "external_apis"
       - "database_queries"
-    
-    direct_access:
       - "file_processing"
       - "batch_operations"
 ```
@@ -1367,23 +1561,31 @@ gateway_config:
       access_pattern: "via_bff"
       rate_limiting: "consumer_tier"
       
-    b2b:
+    b2b_partners:
       authentication: "cognito_m2m"
-      access_pattern: "flexible"
+      access_pattern: "via_bff"
       rate_limiting: "enterprise_tier"
+      
+    b2b_third_party:
+      authentication: "oauth2_or_api_key"
+      access_pattern: "direct"
+      rate_limiting: "third_party_tier"
   
   mcp_servers:
     - name: "database-mcp"
       runtime: "agentcore"
-      scenarios: ["internal", "b2c", "b2b"]
+      scenarios: ["internal", "b2c", "b2b_partners", "b2b_third_party"]
+      third_party_permissions: "read_only"
       
     - name: "api-integration-mcp"
       runtime: "agentcore"
-      scenarios: ["b2c", "b2b"]
+      scenarios: ["b2c", "b2b_partners", "b2b_third_party"]
+      third_party_permissions: "limited_write"
       
     - name: "development-mcp"
       runtime: "agentcore"
       scenarios: ["internal"]
+      third_party_permissions: "none"
   
   routing_rules:
     internal:
@@ -1396,10 +1598,33 @@ gateway_config:
       auth_required: true
       caching_enabled: true
       
-    b2b:
+    b2b_partners:
       path_prefix: "/enterprise"
       auth_required: true
       audit_logging: true
+      
+    b2b_third_party:
+      path_prefix: "/third-party"
+      auth_required: true
+      rate_limiting: "strict"
+      audit_logging: "detailed"
+      cors_enabled: true
+      
+  third_party_controls:
+    allowed_operations:
+      - "tools/list"
+      - "tools/call"
+      - "resources/read"
+    
+    restricted_operations:
+      - "admin/*"
+      - "config/*"
+      - "debug/*"
+    
+    security_headers:
+      - "X-Third-Party-Client-ID"
+      - "X-Request-Source"
+      - "X-Rate-Limit-Remaining"
 ```
 
 ### 5.2 Configuração do EKS para Produção
