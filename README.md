@@ -386,77 +386,455 @@ Para cargas de trabalho críticas e em escala:
 - Suporte a EC2, Fargate e nós híbridos
 - Integração com EBS, EFS e FSx para armazenamento
 
+## Identificação de Dados do Cliente e Passagem de Contexto
+
+### Arquitetura de Identificação de Cliente
+
+```mermaid
+sequenceDiagram
+    participant User as Usuário Final
+    participant Agent as AI Agent
+    participant Gateway as AgentCore Gateway
+    participant Cognito as Amazon Cognito
+    participant MCP as MCP Server
+    participant SM as Secrets Manager
+    
+    Note over User, MCP: 1. Identificação e Autenticação do Cliente
+    User->>Agent: Solicitação com contexto do cliente
+    Agent->>SM: Recupera credenciais do service account
+    SM->>Agent: Client credentials (client_id, client_secret)
+    
+    Note over User, MCP: 2. Obtenção de Token com Contexto
+    Agent->>Cognito: Client Credentials Grant + Client Context
+    Cognito->>Cognito: Valida credenciais e gera JWT
+    Cognito->>Agent: Access Token JWT (com claims do cliente)
+    
+    Note over User, MCP: 3. Passagem de Contexto via Gateway
+    Agent->>Gateway: Request + JWT Token + Client Headers
+    Gateway->>Gateway: Extrai claims do JWT + headers
+    Gateway->>MCP: Request + Contexto do Cliente
+    MCP->>Gateway: Response filtrada por cliente
+    Gateway->>Agent: Response final
+```
+
+### 5.1 Estrutura de Claims JWT para Identificação do Cliente
+
+Baseado na RFC 9068 (JWT Profile for OAuth 2.0 Access Tokens), os tokens JWT devem incluir claims específicos para identificação do cliente:
+
+**Claims Obrigatórios (RFC 9068):**
+```json
+{
+  "iss": "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_POOL",
+  "sub": "ai-agent-service-account-id",
+  "aud": "https://gateway.agentcore.aws.com",
+  "client_id": "finance-agent-001",
+  "scope": "mcp:read mcp:write tenant:acme-corp",
+  "iat": 1704067200,
+  "exp": 1704070800,
+  "jti": "unique-token-identifier"
+}
+```
+
+**Claims Customizados para Contexto do Cliente:**
+```json
+{
+  "tenant_id": "acme-corp-12345",
+  "organization_id": "org-finance-division",
+  "user_context": {
+    "user_id": "user-john-doe",
+    "department": "finance",
+    "role": "analyst",
+    "permissions": ["read:financial-data", "write:reports"]
+  },
+  "client_metadata": {
+    "agent_type": "financial-assistant",
+    "version": "2.1.0",
+    "deployment_env": "production"
+  }
+}
+```
+
+### 5.2 Passagem de Contexto através do Gateway
+
+#### Headers HTTP Padronizados
+
+O AgentCore Gateway utiliza headers HTTP padronizados para passar informações de contexto:
+
+```http
+Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+X-Client-ID: finance-agent-001
+X-Tenant-ID: acme-corp-12345
+X-User-Context: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+X-Request-ID: req-uuid-12345
+X-Correlation-ID: corr-uuid-67890
+```
+
+#### Transformação de Contexto no Gateway
+
+```mermaid
+graph TB
+    subgraph "AgentCore Gateway - Context Processing"
+        JWT[JWT Token Validation]
+        EXTRACT[Claims Extraction]
+        ENRICH[Context Enrichment]
+        TRANSFORM[Header Transformation]
+        ROUTE[Request Routing]
+    end
+    
+    subgraph "Input Context"
+        TOKEN[Access Token JWT]
+        HEADERS[Request Headers]
+        BODY[Request Body]
+    end
+    
+    subgraph "Output Context"
+        MCPHEADERS[MCP Headers]
+        MCPBODY[Enhanced Request]
+        AUDIT[Audit Trail]
+    end
+    
+    TOKEN --> JWT
+    HEADERS --> JWT
+    BODY --> JWT
+    
+    JWT --> EXTRACT
+    EXTRACT --> ENRICH
+    ENRICH --> TRANSFORM
+    TRANSFORM --> ROUTE
+    
+    ROUTE --> MCPHEADERS
+    ROUTE --> MCPBODY
+    ROUTE --> AUDIT
+    
+    style JWT fill:#ff9800
+    style EXTRACT fill:#4caf50
+    style ENRICH fill:#2196f3
+```
+
+### 5.3 Implementação de Context Enrichment
+
+#### Configuração do Gateway para Context Passing
+
+```yaml
+# AgentCore Gateway Configuration
+context_processing:
+  jwt_validation:
+    issuer_validation: true
+    audience_validation: true
+    signature_verification: true
+    
+  claim_extraction:
+    required_claims:
+      - "tenant_id"
+      - "client_id"
+      - "user_context"
+    
+  header_mapping:
+    "tenant_id": "X-Tenant-ID"
+    "client_id": "X-Client-ID"
+    "user_context": "X-User-Context"
+    "organization_id": "X-Org-ID"
+    
+  context_enrichment:
+    tenant_lookup: true
+    permission_resolution: true
+    audit_logging: true
+
+mcp_routing:
+  context_forwarding:
+    preserve_original_headers: true
+    add_gateway_headers: true
+    include_audit_trail: true
+```
+
+#### Exemplo de Processamento no MCP Server
+
+```python
+# Exemplo de como um MCP Server processa o contexto do cliente
+class MCPServerContextHandler:
+    def process_request(self, request):
+        # Extrai contexto dos headers
+        tenant_id = request.headers.get('X-Tenant-ID')
+        client_id = request.headers.get('X-Client-ID')
+        user_context = self.decode_user_context(
+            request.headers.get('X-User-Context')
+        )
+        
+        # Valida permissões baseadas no contexto
+        if not self.validate_permissions(tenant_id, user_context):
+            raise UnauthorizedError("Insufficient permissions")
+        
+        # Filtra dados baseado no tenant
+        filtered_data = self.filter_by_tenant(
+            data=self.get_data(),
+            tenant_id=tenant_id,
+            user_permissions=user_context.get('permissions', [])
+        )
+        
+        return filtered_data
+```
+
+### 5.4 Auditoria e Rastreabilidade
+
+#### Estrutura de Audit Log
+
+```json
+{
+  "timestamp": "2025-01-02T10:30:00Z",
+  "event_type": "mcp_request",
+  "correlation_id": "corr-uuid-67890",
+  "request_id": "req-uuid-12345",
+  "client_context": {
+    "agent_id": "finance-agent-001",
+    "tenant_id": "acme-corp-12345",
+    "user_id": "user-john-doe",
+    "client_ip": "10.0.1.100"
+  },
+  "mcp_context": {
+    "server_name": "financial-data-mcp",
+    "method": "tools/list",
+    "resource_accessed": "/api/v1/financial-reports",
+    "data_classification": "confidential"
+  },
+  "security_context": {
+    "token_issued_at": "2025-01-02T10:25:00Z",
+    "token_expires_at": "2025-01-02T11:25:00Z",
+    "scopes": ["mcp:read", "finance:reports"],
+    "permissions_validated": true
+  },
+  "response_context": {
+    "status_code": 200,
+    "response_size_bytes": 2048,
+    "processing_time_ms": 150,
+    "records_returned": 25
+  }
+}
+```
+
+### 5.5 Conformidade com RFCs e Especificações
+
+#### RFC 9068 - JWT Profile for OAuth 2.0 Access Tokens
+
+O gateway implementa validação completa conforme RFC 9068:
+
+- **Validação de Assinatura**: Verificação criptográfica do token
+- **Validação de Audience**: Confirmação que o token foi emitido para o gateway
+- **Validação de Issuer**: Verificação da origem do token
+- **Validação de Tempo**: Verificação de expiração e não-antes
+
+#### RFC 8707 - Resource Indicators for OAuth 2.0
+
+Implementação de Resource Indicators para binding de tokens:
+
+```http
+# Durante a solicitação do token
+POST /oauth2/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials
+&client_id=finance-agent-001
+&client_secret=secret
+&resource=https://gateway.agentcore.aws.com
+&scope=mcp:read mcp:write
+```
+
+#### MCP Authorization Specification
+
+Conformidade com a especificação MCP de autorização:
+
+- **Protected Resource Metadata**: Descoberta de servidores de autorização
+- **Scope Challenge Handling**: Tratamento de erros de escopo insuficiente
+- **Token Audience Binding**: Validação de audience para prevenir token passthrough
+
+### 5.6 Segurança e Isolamento de Dados
+
+#### Princípios de Isolamento
+
+```mermaid
+graph TB
+    subgraph "Tenant Isolation Architecture"
+        subgraph "Tenant A - ACME Corp"
+            TA_AGENT[Finance Agent A]
+            TA_DATA[Financial Data A]
+            TA_MCP[MCP Instance A]
+        end
+        
+        subgraph "Tenant B - XYZ Inc"
+            TB_AGENT[HR Agent B]
+            TB_DATA[HR Data B]
+            TB_MCP[MCP Instance B]
+        end
+        
+        subgraph "Gateway Layer"
+            GATEWAY[AgentCore Gateway]
+            ROUTER[Context Router]
+            VALIDATOR[Token Validator]
+        end
+        
+        subgraph "Security Controls"
+            RBAC[Role-Based Access]
+            ENCRYPTION[Data Encryption]
+            AUDIT[Audit Logging]
+        end
+    end
+    
+    TA_AGENT --> GATEWAY
+    TB_AGENT --> GATEWAY
+    
+    GATEWAY --> ROUTER
+    ROUTER --> VALIDATOR
+    
+    VALIDATOR --> TA_MCP
+    VALIDATOR --> TB_MCP
+    
+    TA_MCP --> TA_DATA
+    TB_MCP --> TB_DATA
+    
+    VALIDATOR --> RBAC
+    VALIDATOR --> ENCRYPTION
+    VALIDATOR --> AUDIT
+    
+    style GATEWAY fill:#ff9800
+    style VALIDATOR fill:#4caf50
+    style RBAC fill:#f44336
+```
+
+#### Controles de Segurança Implementados
+
+1. **Isolamento de Tenant**: Dados completamente segregados por tenant_id
+2. **Validação de Contexto**: Verificação rigorosa de permissões por request
+3. **Encryption at Rest**: Dados criptografados com chaves específicas por tenant
+4. **Encryption in Transit**: TLS 1.3 para todas as comunicações
+5. **Audit Completo**: Log de todas as operações com contexto de segurança
+
 ## Estratégia de Autenticação
 
-### Fluxo de Autenticação Completo
+### Fluxo de Autenticação Completo - Cenários Distintos
+
+#### Cenário 1: MCP Client Direto (ex: Kiro IDE) - DCR Flow
+
+```mermaid
+sequenceDiagram
+    participant IDE as Kiro IDE
+    participant KC as Keycloak
+    participant MCP as MCP Server
+    
+    Note over IDE, MCP: Dynamic Client Registration Flow (RFC 7591)
+    IDE->>KC: 1. DCR Request com Client Metadata
+    KC->>KC: 2. Valida Software Statement
+    KC->>IDE: 3. Client Credentials (client_id, client_secret)
+    
+    Note over IDE, MCP: Authorization Code Flow com PKCE
+    IDE->>KC: 4. Authorization Request + PKCE Challenge
+    KC->>KC: 5. User Authentication & Consent
+    KC->>IDE: 6. Authorization Code
+    IDE->>KC: 7. Token Request + PKCE Verifier
+    KC->>IDE: 8. Access Token JWT
+    
+    Note over IDE, MCP: Direct MCP Access
+    IDE->>MCP: 9. MCP Request + Access Token
+    MCP->>KC: 10. Token Validation
+    KC->>MCP: 11. Token Valid + User Context
+    MCP->>IDE: 12. MCP Response
+```
+
+#### Cenário 2: Agent-to-Gateway Communication - Client Credentials Flow
 
 ```mermaid
 sequenceDiagram
     participant Agent as AI Agent
-    participant KC as Keycloak
-    participant AGW as AgentCore Gateway
+    participant SM as Secrets Manager
     participant COG as Amazon Cognito
+    participant AGW as AgentCore Gateway
     participant MCP as MCP Server
     
-    Note over Agent, MCP: Dynamic Client Registration (DCR) Flow
-    Agent->>KC: 1. DCR Request (RFC 7591)
-    KC->>KC: 2. Validate Software Statement
-    KC->>Agent: 3. Client Credentials (client_id, client_secret)
+    Note over Agent, MCP: Service Account Authentication (RFC 6749 Sec 4.4)
+    Agent->>SM: 1. Retrieve Service Account Credentials
+    SM->>Agent: 2. Client Credentials (client_id, client_secret)
     
-    Note over Agent, MCP: Agent Authentication Flow
-    Agent->>AGW: 4. Request with Client Credentials
-    AGW->>KC: 5. Validate Client Credentials
-    KC->>AGW: 6. Access Token (JWT)
+    Note over Agent, MCP: M2M Token Request
+    Agent->>COG: 3. Client Credentials Grant + Resource Indicator
+    COG->>COG: 4. Validate Credentials & Generate JWT
+    COG->>Agent: 5. Access Token JWT (RFC 9068)
     
-    Note over Agent, MCP: M2M Communication Flow
-    AGW->>COG: 7. Client Credentials Grant
-    COG->>AGW: 8. M2M Access Token
-    AGW->>MCP: 9. MCP Request + M2M Token
-    MCP->>COG: 10. Token Validation
-    COG->>MCP: 11. Token Valid
-    MCP->>AGW: 12. MCP Response
-    AGW->>Agent: 13. Final Response
+    Note over Agent, MCP: Gateway-Mediated MCP Access
+    Agent->>AGW: 6. MCP Request + JWT + Client Context
+    AGW->>COG: 7. Token Validation
+    COG->>AGW: 8. Token Valid + Claims
+    AGW->>AGW: 9. Context Enrichment & Routing
+    AGW->>MCP: 10. MCP Request + Enhanced Context
+    MCP->>AGW: 11. MCP Response
+    AGW->>Agent: 12. Final Response
 ```
 
-### 4.1 Keycloak para Dynamic Client Registration (DCR)
+### 4.1 Keycloak para Dynamic Client Registration (DCR) - MCP Clients Diretos
 
-**Casos de Uso:**
-- Registro dinâmico de clientes MCP
-- Cenários que requerem flexibilidade de registro
-- Integração com sistemas de identidade existentes
+**Casos de Uso Específicos:**
+- Conectividade direta via MCP Client (como Kiro IDE)
+- Ferramentas de desenvolvimento que precisam de acesso direto aos MCPs
+- Cenários que requerem flexibilidade de distribuição e configuração
+
+**Justificativa para DCR:**
+O DCR é mais adequado para MCP Clients diretos pois oferece uma estratégia flexível para distribuição, permitindo que ferramentas como IDEs se registrem dinamicamente sem necessidade de pré-configuração manual. Conforme RFC 7591, o DCR permite que aplicações cliente se registrem automaticamente com servidores de autorização.
 
 **Implementação Técnica:**
 - Conformidade com RFC 7591 (OAuth 2.0 Dynamic Client Registration)
 - Suporte a software statements para validação de clientes
-- Registro anônimo e protegido conforme necessidade
+- Client ID Metadata Documents conforme especificação MCP
+- Registro protegido com validação de domínio
 
-**Exemplo de Fluxo DCR:**
+**Exemplo de Fluxo DCR para MCP Client:**
 ```json
 {
-  "software_id": "MCP-CLIENT-001",
-  "client_name": "AI Agent MCP Client",
-  "client_uri": "https://agent.example.com/",
-  "grant_types": ["client_credentials"],
-  "token_endpoint_auth_method": "client_secret_basic"
+  "software_id": "KIRO-MCP-CLIENT",
+  "client_name": "Kiro IDE MCP Client",
+  "client_uri": "https://kiro.ai/mcp-client",
+  "grant_types": ["authorization_code"],
+  "response_types": ["code"],
+  "redirect_uris": ["https://localhost:8080/callback"],
+  "token_endpoint_auth_method": "none",
+  "code_challenge_methods_supported": ["S256"]
 }
 ```
 
-### 4.2 Amazon Cognito para Machine-to-Machine (M2M)
+### 4.2 Amazon Cognito para Comunicação Agent-Gateway (M2M)
 
-**Casos de Uso:**
+**Casos de Uso Específicos:**
+- Comunicação Agent → AgentCore Gateway
 - Comunicação Gateway → MCP Servers
-- Autenticação entre serviços internos
-- Cenários de alta escala e performance
+- Autenticação entre serviços internos da arquitetura
+
+**Justificativa para Client Credentials:**
+Para a comunicação entre agentes e o gateway, o Client Credentials Grant (RFC 6749, Seção 4.4) é mais apropriado pois:
+- Agentes atuam em nome próprio, não de usuários
+- Credenciais podem ser gerenciadas via AWS Secrets Manager
+- Identificação clara do agente através de service accounts
+- Melhor performance para comunicação M2M em alta escala
 
 **Implementação Técnica:**
-- OAuth 2.0 Client Credentials Grant
-- Tokens JWT com scopes específicos
-- Integração nativa com API Gateway para validação
+- OAuth 2.0 Client Credentials Grant (RFC 6749, Seção 4.4)
+- Tokens JWT conforme RFC 9068 (JWT Profile for OAuth 2.0 Access Tokens)
+- Integração com AWS Secrets Manager para rotação de credenciais
+- Service accounts dedicadas por agente
 
-**Vantagens da Abordagem Híbrida:**
-- **Distribuição de Carga**: Keycloak para DCR complexo, Cognito para M2M em escala
-- **Otimização de Custos**: Uso eficiente de recursos de cada serviço
-- **Flexibilidade**: Adaptação a diferentes padrões de uso
+**Exemplo de Token JWT para Agent (RFC 9068):**
+```json
+{
+  "iss": "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_XXXXXXXXX",
+  "sub": "ai-agent-finance-001",
+  "aud": "https://gateway.agentcore.aws.com",
+  "client_id": "finance-agent-service-account",
+  "scope": "mcp:read mcp:write finance:access",
+  "iat": 1704067200,
+  "exp": 1704070800,
+  "jti": "unique-token-id"
+}
+```
+
+**Vantagens da Abordagem Dual:**
+- **Separação de Responsabilidades**: DCR para flexibilidade de distribuição, Client Credentials para M2M confiável
+- **Segurança Otimizada**: Credenciais gerenciadas centralmente para agentes, registro dinâmico para clientes
+- **Escalabilidade**: Cognito otimizado para M2M em alta escala, Keycloak para flexibilidade de registro
 
 ## Implementação Detalhada
 
@@ -898,33 +1276,147 @@ gantt
 
 ## Referências Técnicas
 
-### RFCs e Especificações
-- **RFC 7591**: OAuth 2.0 Dynamic Client Registration Protocol
-- **RFC 6749**: The OAuth 2.0 Authorization Framework
-- **RFC 7636**: Proof Key for Code Exchange by OAuth Public Clients
-- **RFC 8707**: Resource Indicators for OAuth 2.0
-- **MCP Specification**: Model Context Protocol v2025-11-25
+### RFCs e Especificações Oficiais
 
-### Documentação AWS
-- [Amazon EKS Best Practices Guide](https://aws.github.io/aws-eks-best-practices/)
-- [Amazon Cognito Developer Guide](https://docs.aws.amazon.com/cognito/)
-- [Amazon Bedrock AgentCore Documentation](https://aws.amazon.com/bedrock/agentcore/)
-- [AWS Security Reference Architecture](https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/)
+#### OAuth 2.0 e Extensões
+- **RFC 6749**: The OAuth 2.0 Authorization Framework - Base para autenticação M2M
+- **RFC 7591**: OAuth 2.0 Dynamic Client Registration Protocol - DCR para MCP clients
+- **RFC 7636**: Proof Key for Code Exchange by OAuth Public Clients - PKCE obrigatório
+- **RFC 8707**: Resource Indicators for OAuth 2.0 - Token audience binding
+- **RFC 9068**: JSON Web Token (JWT) Profile for OAuth 2.0 Access Tokens - Formato padronizado de tokens
+- **RFC 9728**: OAuth 2.0 Protected Resource Metadata - Descoberta de servidores de autorização
 
-### Recursos Adicionais
-- [Model Context Protocol Official Site](https://modelcontextprotocol.io/)
-- [Keycloak Documentation](https://www.keycloak.org/documentation)
-- [OAuth 2.0 Security Best Practices](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics)
+#### Model Context Protocol (MCP)
+- **MCP Specification v2025-11-25**: [Model Context Protocol Official](https://modelcontextprotocol.io/specification/2025-11-25)
+- **MCP Authorization Specification**: [MCP Authorization](https://modelcontextprotocol.io/specification/draft/basic/authorization)
+- **Client ID Metadata Documents**: OAuth Client ID Metadata Document (draft-ietf-oauth-client-id-metadata-document-00)
+
+#### Segurança e Melhores Práticas
+- **OAuth 2.1**: OAuth 2.1 Security Best Practices - Versão consolidada com melhorias de segurança
+- **OWASP API Security Top 10**: Diretrizes de segurança para APIs
+- **NIST Cybersecurity Framework**: Framework de segurança cibernética
+
+### Documentação AWS Oficial
+
+#### Amazon EKS
+- [Amazon EKS Best Practices Guide](https://aws.github.io/aws-eks-best-practices/) - Práticas recomendadas para EKS
+- [EKS Auto Mode Documentation](https://docs.aws.amazon.com/eks/latest/userguide/auto-mode.html) - Gerenciamento automatizado
+- [EKS Security Best Practices](https://aws.github.io/aws-eks-best-practices/security/docs/) - Segurança em EKS
+
+#### Amazon Cognito
+- [Amazon Cognito Developer Guide](https://docs.aws.amazon.com/cognito/) - Guia completo do Cognito
+- [Cognito User Pool OAuth 2.0 Grants](https://docs.aws.amazon.com/cognito/latest/developerguide/amazon-cognito-user-pools-using-tokens-with-identity-providers.html) - Implementação OAuth
+- [Machine-to-Machine Authentication](https://docs.aws.amazon.com/cognito/latest/developerguide/amazon-cognito-user-pools-using-tokens-verifying-a-jwt.html) - M2M com Cognito
+
+#### Amazon Bedrock e AgentCore
+- [Amazon Bedrock AgentCore Documentation](https://aws.amazon.com/bedrock/agentcore/) - Documentação oficial do AgentCore
+- [Bedrock Agents Developer Guide](https://docs.aws.amazon.com/bedrock/latest/userguide/agents.html) - Desenvolvimento de agentes
+- [AgentCore Runtime Guide](https://docs.aws.amazon.com/bedrock/latest/userguide/agentcore-runtime.html) - Runtime para MCPs
+
+#### Segurança AWS
+- [AWS Security Reference Architecture](https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/) - Arquitetura de referência
+- [AWS Secrets Manager Best Practices](https://docs.aws.amazon.com/secretsmanager/latest/userguide/best-practices.html) - Gerenciamento de credenciais
+- [AWS IAM Best Practices](https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html) - Práticas de IAM
+
+### Recursos Técnicos Adicionais
+
+#### Keycloak
+- [Keycloak Documentation](https://www.keycloak.org/documentation) - Documentação oficial
+- [Keycloak OAuth 2.0 Dynamic Client Registration](https://www.keycloak.org/docs/latest/securing_apps/#_client_registration) - Implementação DCR
+- [Keycloak Security Best Practices](https://www.keycloak.org/docs/latest/server_admin/#_security_best_practices) - Práticas de segurança
+
+#### Observabilidade e Monitoramento
+- [OpenTelemetry Specification](https://opentelemetry.io/docs/specs/) - Padrão de observabilidade
+- [AWS CloudWatch Best Practices](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/cloudwatch_architecture.html) - Monitoramento
+- [Prometheus Monitoring](https://prometheus.io/docs/introduction/overview/) - Métricas de aplicação
+
+### Implementações de Referência
+
+#### MCP Implementations
+- [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk) - SDK oficial TypeScript
+- [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) - SDK oficial Python
+- [MCP Servers Examples](https://github.com/modelcontextprotocol/servers) - Exemplos de servidores MCP
+
+#### OAuth 2.0 Libraries
+- [OAuth 2.0 Security Best Practices](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics) - Práticas de segurança
+- [PKCE Implementation Guide](https://datatracker.ietf.org/doc/html/rfc7636) - Implementação PKCE
+- [JWT Best Practices](https://datatracker.ietf.org/doc/html/rfc8725) - Práticas para JWT
+
+### Conformidade e Certificações
+
+#### Padrões de Conformidade
+- **SOC 2 Type II**: Controles de segurança organizacional
+- **ISO 27001**: Sistema de gestão de segurança da informação
+- **PCI DSS**: Padrão de segurança para dados de cartão
+- **GDPR**: Regulamento geral de proteção de dados
+
+#### Certificações AWS
+- **AWS Well-Architected Framework**: Princípios arquiteturais
+- **AWS Security Pillar**: Pilar de segurança do Well-Architected
+- **AWS Compliance Programs**: Programas de conformidade AWS
+
+### Atualizações e Versionamento
+
+Este documento segue as seguintes especificações em suas versões mais recentes:
+
+- **MCP Specification**: v2025-11-25 (Novembro 2024)
+- **OAuth 2.1**: Draft mais recente (2024)
+- **RFC 9068**: Publicado em Outubro 2021
+- **RFC 9728**: Publicado em Dezembro 2023
+- **AWS Services**: Versões atuais (Janeiro 2025)
+
+**Nota sobre Atualizações**: Este documento é mantido atualizado com as versões mais recentes das especificações. Recomenda-se verificar periodicamente as especificações oficiais para mudanças que possam impactar a implementação.
 
 ## Conclusão
 
-Esta arquitetura fornece uma base sólida e escalável para implementação de MCPs e AI Agents na AWS, combinando a simplicidade do AgentCore Runtime para desenvolvimento e POCs com a robustez do Amazon EKS para ambientes de produção. A estratégia de autenticação híbrida (Keycloak + Cognito) oferece flexibilidade e otimização de custos, enquanto o AgentCore Gateway centraliza o gerenciamento e orquestração de MCPs.
+Esta arquitetura revisada fornece uma base sólida e escalável para implementação de MCPs e AI Agents na AWS, com distinções claras entre diferentes padrões de autenticação baseados no contexto de uso:
 
-A implementação faseada permite evolução gradual da solução, minimizando riscos e permitindo aprendizado contínuo. O foco em segurança, observabilidade e otimização de custos garante que a solução seja adequada para ambientes empresariais críticos.
+### Principais Melhorias Implementadas
+
+#### 1. **Estratégia de Autenticação Diferenciada**
+- **DCR (Keycloak)** para MCP Clients diretos como IDEs, oferecendo flexibilidade de distribuição
+- **Client Credentials (Cognito)** para comunicação Agent-Gateway, otimizada para M2M em escala
+- **Service Accounts** gerenciadas via AWS Secrets Manager para identificação clara de agentes
+
+#### 2. **Identificação e Contexto de Cliente Robusto**
+- Implementação completa de **RFC 9068** para tokens JWT padronizados
+- **Context Enrichment** no gateway com passagem estruturada de dados do cliente
+- **Tenant Isolation** completo com auditoria granular por cliente
+- **Headers HTTP padronizados** para passagem de contexto entre componentes
+
+#### 3. **Conformidade com Especificações Oficiais**
+- **RFC 7591** para Dynamic Client Registration
+- **RFC 6749 Seção 4.4** para Client Credentials Grant
+- **RFC 8707** para Resource Indicators e token audience binding
+- **MCP Authorization Specification** para descoberta e validação de servidores
+
+#### 4. **Segurança Aprimorada**
+- **Token Audience Binding** para prevenir token passthrough
+- **PKCE obrigatório** para MCP clients públicos
+- **Validação rigorosa de contexto** em cada request
+- **Encryption at rest e in transit** com chaves específicas por tenant
+
+### Benefícios da Arquitetura Revisada
+
+- **Flexibilidade de Distribuição**: DCR permite que ferramentas como Kiro se registrem dinamicamente
+- **Escalabilidade M2M**: Client Credentials otimizado para comunicação de alta escala entre agentes
+- **Identificação Clara**: Service accounts e context enrichment permitem rastreabilidade completa
+- **Conformidade Regulatória**: Implementação baseada em RFCs oficiais e melhores práticas de segurança
+- **Isolamento de Dados**: Segregação completa por tenant com controles granulares
+
+### Próximos Passos Recomendados
+
+1. **Implementação Faseada**: Seguir o roadmap proposto com foco inicial na fundação
+2. **Testes de Conformidade**: Validar implementação contra especificações RFC
+3. **Monitoramento Proativo**: Implementar observabilidade desde o primeiro deploy
+4. **Documentação Técnica**: Manter documentação atualizada com as especificações
+
+A implementação faseada permite evolução gradual da solução, minimizando riscos e permitindo aprendizado contínuo. O foco em conformidade com RFCs oficiais, segurança robusta e identificação clara de contexto garante que a solução seja adequada para ambientes empresariais críticos com requisitos rigorosos de auditoria e compliance.
 
 ---
 
-**Versão**: 1.0  
+**Versão**: 2.0  
 **Data**: Janeiro 2025  
 **Autor**: Arquitetura de Soluções AWS  
-**Status**: Documento Vivo - Sujeito a atualizações baseadas em feedback e evolução das tecnologias
+**Status**: Documento Vivo - Atualizado com RFC 9068, MCP Authorization Spec e melhores práticas 2025  
+**Principais Atualizações**: Estratégia de autenticação diferenciada, identificação de contexto de cliente, conformidade com especificações oficiais
