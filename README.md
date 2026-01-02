@@ -786,326 +786,732 @@ Para cargas de trabalho críticas e em escala:
 
 ## Identificação de Dados do Cliente e Passagem de Contexto
 
-### Arquitetura de Identificação de Cliente
+### Arquitetura de Identificação de Cliente com Token Exchange (RFC 8693)
 
 ```mermaid
 sequenceDiagram
     participant User as Usuário Final
     participant Agent as AI Agent
     participant Gateway as AgentCore Gateway
+    participant STS as Security Token Service<br/>(RFC 8693)
     participant Cognito as Amazon Cognito
     participant MCP as MCP Server
     participant SM as Secrets Manager
     
-    Note over User, MCP: 1. Identificação e Autenticação do Cliente
+    Note over User, MCP: 1. Token Exchange para Contexto de Cliente (RFC 8693)
     User->>Agent: Solicitação com contexto do cliente
     Agent->>SM: Recupera credenciais do service account
     SM->>Agent: Client credentials (client_id, client_secret)
     
-    Note over User, MCP: 2. Obtenção de Token com Contexto
-    Agent->>Cognito: Client Credentials Grant + Client Context
-    Cognito->>Cognito: Valida credenciais e gera JWT
-    Cognito->>Agent: Access Token JWT (com claims do cliente)
+    Note over User, MCP: 2. Token Exchange - Delegation Pattern
+    Agent->>STS: Token Exchange Request<br/>subject_token (user context)<br/>actor_token (agent credentials)
+    STS->>STS: Valida tokens e aplica políticas
+    STS->>Agent: Composite Token JWT (user + agent context)
     
-    Note over User, MCP: 3. Passagem de Contexto via Gateway
-    Agent->>Gateway: Request + JWT Token + Client Headers
-    Gateway->>Gateway: Extrai claims do JWT + headers
-    Gateway->>MCP: Request + Contexto do Cliente
-    MCP->>Gateway: Response filtrada por cliente
+    Note over User, MCP: 3. Passagem de Contexto Enriquecido via Gateway
+    Agent->>Gateway: Request + Composite JWT Token
+    Gateway->>Gateway: Extrai claims do composite token
+    Gateway->>MCP: Request + Contexto Completo (user + agent)
+    MCP->>Gateway: Response filtrada por contexto
     Gateway->>Agent: Response final
 ```
 
-### 5.1 Estrutura de Claims JWT para Identificação do Cliente
+### 5.1 Implementação de Token Exchange (RFC 8693)
 
-Baseado na RFC 9068 (JWT Profile for OAuth 2.0 Access Tokens), os tokens JWT devem incluir claims específicos para identificação do cliente:
+#### Token Exchange para Delegation Semantics
 
-**Claims Obrigatórios (RFC 9068):**
-```json
-{
-  "iss": "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_POOL",
-  "sub": "ai-agent-service-account-id",
-  "aud": "https://gateway.agentcore.aws.com",
-  "client_id": "finance-agent-001",
-  "scope": "mcp:read mcp:write tenant:acme-corp",
-  "iat": 1704067200,
-  "exp": 1704070800,
-  "jti": "unique-token-identifier"
-}
+A RFC 8693 define um protocolo para Security Token Service (STS) que permite trocar tokens existentes por novos tokens com diferentes contextos, incluindo **delegation** e **impersonation**. Na nossa arquitetura, isso é especialmente útil para:
+
+**Casos de Uso com Token Exchange:**
+- **Agent Delegation**: Agent atua em nome do usuário mantendo identidade própria
+- **Context Enrichment**: Combinar contexto do usuário com credenciais do agent
+- **Cross-Domain Access**: Trocar tokens entre diferentes domínios de segurança
+- **Scope Transformation**: Converter escopos de usuário para escopos de sistema
+
+#### Implementação do Token Exchange Request
+
+```http
+POST /oauth2/token HTTP/1.1
+Host: sts.example.com
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+&subject_token=eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+&subject_token_type=urn:ietf:params:oauth:token-type:access_token
+&actor_token=eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+&actor_token_type=urn:ietf:params:oauth:token-type:access_token
+&resource=https://gateway.agentcore.aws.com
+&audience=mcp-servers
+&scope=mcp:read mcp:write user:context
 ```
 
-**Claims Customizados para Contexto do Cliente:**
+#### Composite Token JWT com Claims RFC 8693
+
 ```json
 {
-  "tenant_id": "acme-corp-12345",
-  "organization_id": "org-finance-division",
+  "iss": "https://sts.agentcore.aws.com",
+  "sub": "user-12345",
+  "aud": "https://gateway.agentcore.aws.com",
+  "exp": 1704070800,
+  "iat": 1704067200,
+  "jti": "composite-token-uuid",
+  
+  // Claims do usuário (subject_token)
   "user_context": {
     "user_id": "user-john-doe",
+    "email": "john.doe@acme-corp.com",
     "department": "finance",
     "role": "analyst",
+    "tenant_id": "acme-corp-12345",
     "permissions": ["read:financial-data", "write:reports"]
   },
-  "client_metadata": {
+  
+  // Claims do agent (actor_token) - RFC 8693 "act" claim
+  "act": {
+    "sub": "ai-agent-finance-001",
+    "iss": "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_POOL",
+    "client_id": "finance-agent-service-account",
     "agent_type": "financial-assistant",
     "version": "2.1.0",
     "deployment_env": "production"
+  },
+  
+  // Delegation chain (se aplicável)
+  "delegation_chain": [
+    {
+      "delegator": "user-john-doe",
+      "delegate": "ai-agent-finance-001",
+      "scope": ["mcp:read", "mcp:write:limited"],
+      "timestamp": "2025-01-02T10:25:00Z"
+    }
+  ],
+  
+  // Contexto de negócio
+  "business_context": {
+    "session_id": "session-uuid-12345",
+    "request_origin": "web-app",
+    "compliance_level": "gdpr",
+    "data_classification": "confidential"
   }
 }
 ```
 
-### 5.2 Passagem de Contexto através do Gateway
+### 5.2 Security Token Service (STS) Configuration
 
-#### Headers HTTP Padronizados
+#### STS para Token Exchange
+```yaml
+# Security Token Service Configuration (RFC 8693)
+sts_config:
+  token_exchange:
+    enabled: true
+    grant_type: "urn:ietf:params:oauth:grant-type:token-exchange"
+    
+  supported_token_types:
+    input:
+      - "urn:ietf:params:oauth:token-type:access_token"
+      - "urn:ietf:params:oauth:token-type:id_token"
+      - "urn:ietf:params:oauth:token-type:jwt"
+    
+    output:
+      - "urn:ietf:params:oauth:token-type:access_token"
+      - "urn:ietf:params:oauth:token-type:jwt"
+  
+  delegation_policies:
+    - name: "agent_delegation"
+      subject_pattern: "user-*"
+      actor_pattern: "ai-agent-*"
+      allowed_scopes: ["mcp:read", "mcp:write:limited"]
+      max_delegation_depth: 2
+      
+    - name: "third_party_delegation"
+      subject_pattern: "user-*"
+      actor_pattern: "third-party-*"
+      allowed_scopes: ["mcp:read"]
+      max_delegation_depth: 1
+  
+  token_validation:
+    signature_verification: true
+    audience_validation: true
+    expiration_check: true
+    revocation_check: true
+```
 
-O AgentCore Gateway utiliza headers HTTP padronizados para passar informações de contexto:
+#### Integration with Amazon Cognito
+```yaml
+# Cognito Integration for Token Exchange
+cognito_sts_integration:
+  user_pool_id: "us-east-1_XXXXXXXXX"
+  
+  token_exchange_client:
+    client_id: "sts-token-exchange-client"
+    client_secret: "${AWS_SECRET_MANAGER_REF}"
+    grant_types: ["urn:ietf:params:oauth:grant-type:token-exchange"]
+    
+  custom_attributes:
+    - "tenant_id"
+    - "department"
+    - "role"
+    - "permissions"
+  
+  lambda_triggers:
+    pre_token_generation: "arn:aws:lambda:us-east-1:123456789012:function:EnrichTokenClaims"
+    post_authentication: "arn:aws:lambda:us-east-1:123456789012:function:LogUserContext"
+```
+
+### 5.3 Passagem de Contexto Enriquecido através do Gateway
+
+#### Headers HTTP com Contexto RFC 8693
 
 ```http
 Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
-X-Client-ID: finance-agent-001
+X-Subject-Token-Type: urn:ietf:params:oauth:token-type:access_token
+X-Actor-Context: eyJzdWIiOiJhaS1hZ2VudC1maW5hbmNlLTAwMSJ9...
+X-Delegation-Chain: eyJkZWxlZ2F0b3IiOiJ1c2VyLWpvaG4tZG9lIn0...
 X-Tenant-ID: acme-corp-12345
 X-User-Context: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+X-Business-Context: eyJzZXNzaW9uX2lkIjoic2Vzc2lvbi11dWlkIn0...
 X-Request-ID: req-uuid-12345
 X-Correlation-ID: corr-uuid-67890
 ```
 
-#### Transformação de Contexto no Gateway
+#### Gateway Context Processing com RFC 8693
 
 ```mermaid
 graph TB
-    subgraph "AgentCore Gateway - Context Processing"
-        JWT[JWT Token Validation]
-        EXTRACT[Claims Extraction]
-        ENRICH[Context Enrichment]
-        TRANSFORM[Header Transformation]
-        ROUTE[Request Routing]
+    subgraph "AgentCore Gateway - RFC 8693 Context Processing"
+        TOKEN_EXCHANGE[Token Exchange Validation]
+        COMPOSITE_PARSE[Composite Token Parsing]
+        DELEGATION_CHECK[Delegation Chain Validation]
+        CONTEXT_EXTRACT[Context Extraction]
+        POLICY_APPLY[Policy Application]
+        HEADER_TRANSFORM[Header Transformation]
     end
     
-    subgraph "Input Context"
-        TOKEN[Access Token JWT]
-        HEADERS[Request Headers]
-        BODY[Request Body]
+    subgraph "Input Tokens (RFC 8693)"
+        COMPOSITE_TOKEN[Composite JWT Token]
+        SUBJECT_CLAIMS[Subject Claims<br/>(User Context)]
+        ACTOR_CLAIMS[Actor Claims<br/>(Agent Context)]
     end
     
     subgraph "Output Context"
-        MCPHEADERS[MCP Headers]
-        MCPBODY[Enhanced Request]
-        AUDIT[Audit Trail]
+        MCP_HEADERS[Enhanced MCP Headers]
+        AUDIT_CONTEXT[Audit Context]
+        FILTERED_CLAIMS[Filtered Claims by Policy]
     end
     
-    TOKEN --> JWT
-    HEADERS --> JWT
-    BODY --> JWT
+    COMPOSITE_TOKEN --> TOKEN_EXCHANGE
+    TOKEN_EXCHANGE --> COMPOSITE_PARSE
+    COMPOSITE_PARSE --> SUBJECT_CLAIMS
+    COMPOSITE_PARSE --> ACTOR_CLAIMS
     
-    JWT --> EXTRACT
-    EXTRACT --> ENRICH
-    ENRICH --> TRANSFORM
-    TRANSFORM --> ROUTE
+    SUBJECT_CLAIMS --> DELEGATION_CHECK
+    ACTOR_CLAIMS --> DELEGATION_CHECK
+    DELEGATION_CHECK --> CONTEXT_EXTRACT
+    CONTEXT_EXTRACT --> POLICY_APPLY
+    POLICY_APPLY --> HEADER_TRANSFORM
     
-    ROUTE --> MCPHEADERS
-    ROUTE --> MCPBODY
-    ROUTE --> AUDIT
+    HEADER_TRANSFORM --> MCP_HEADERS
+    HEADER_TRANSFORM --> AUDIT_CONTEXT
+    HEADER_TRANSFORM --> FILTERED_CLAIMS
     
-    style JWT fill:#ff9800
-    style EXTRACT fill:#4caf50
-    style ENRICH fill:#2196f3
+    style TOKEN_EXCHANGE fill:#ff9800
+    style COMPOSITE_PARSE fill:#4caf50
+    style DELEGATION_CHECK fill:#2196f3
+    style POLICY_APPLY fill:#9c27b0
 ```
 
-### 5.3 Implementação de Context Enrichment
+### 5.4 Implementação de Delegation vs Impersonation
 
-#### Configuração do Gateway para Context Passing
-
-```yaml
-# AgentCore Gateway Configuration
-context_processing:
-  jwt_validation:
-    issuer_validation: true
-    audience_validation: true
-    signature_verification: true
-    
-  claim_extraction:
-    required_claims:
-      - "tenant_id"
-      - "client_id"
-      - "user_context"
-    
-  header_mapping:
-    "tenant_id": "X-Tenant-ID"
-    "client_id": "X-Client-ID"
-    "user_context": "X-User-Context"
-    "organization_id": "X-Org-ID"
-    
-  context_enrichment:
-    tenant_lookup: true
-    permission_resolution: true
-    audit_logging: true
-
-mcp_routing:
-  context_forwarding:
-    preserve_original_headers: true
-    add_gateway_headers: true
-    include_audit_trail: true
-```
-
-#### Exemplo de Processamento no MCP Server
-
+#### Delegation Semantics (Recomendado)
 ```python
-# Exemplo de como um MCP Server processa o contexto do cliente
-class MCPServerContextHandler:
-    def process_request(self, request):
-        # Extrai contexto dos headers
-        tenant_id = request.headers.get('X-Tenant-ID')
-        client_id = request.headers.get('X-Client-ID')
-        user_context = self.decode_user_context(
-            request.headers.get('X-User-Context')
+# Exemplo de processamento de delegation com RFC 8693
+class TokenExchangeProcessor:
+    def process_delegation_token(self, composite_token):
+        # Parse composite token
+        claims = self.parse_jwt(composite_token)
+        
+        # Extract subject (user) and actor (agent) contexts
+        subject_context = claims.get('user_context', {})
+        actor_context = claims.get('act', {})
+        
+        # Validate delegation chain
+        delegation_chain = claims.get('delegation_chain', [])
+        if not self.validate_delegation_chain(delegation_chain):
+            raise UnauthorizedError("Invalid delegation chain")
+        
+        # Apply delegation policies
+        effective_permissions = self.apply_delegation_policies(
+            subject_permissions=subject_context.get('permissions', []),
+            actor_permissions=actor_context.get('scopes', []),
+            delegation_policies=self.get_delegation_policies()
         )
         
-        # Valida permissões baseadas no contexto
-        if not self.validate_permissions(tenant_id, user_context):
-            raise UnauthorizedError("Insufficient permissions")
+        return {
+            'subject': subject_context,
+            'actor': actor_context,
+            'effective_permissions': effective_permissions,
+            'delegation_chain': delegation_chain
+        }
+    
+    def validate_delegation_chain(self, chain):
+        # Validate each step in delegation chain
+        for step in chain:
+            if not self.is_valid_delegation_step(step):
+                return False
+        return True
+```
+
+#### MCP Server Context Processing
+```python
+# Exemplo de como um MCP Server processa contexto RFC 8693
+class MCPServerRFC8693Handler:
+    def process_request_with_delegation(self, request):
+        # Extract delegation context from headers
+        composite_token = request.headers.get('Authorization').replace('Bearer ', '')
+        actor_context = self.decode_header(request.headers.get('X-Actor-Context'))
+        delegation_chain = self.decode_header(request.headers.get('X-Delegation-Chain'))
         
-        # Filtra dados baseado no tenant
-        filtered_data = self.filter_by_tenant(
+        # Parse composite token
+        token_claims = self.parse_composite_token(composite_token)
+        
+        # Validate delegation authority
+        if not self.validate_delegation_authority(token_claims, actor_context):
+            raise UnauthorizedError("Actor not authorized for delegation")
+        
+        # Apply business logic with delegation context
+        filtered_data = self.filter_data_by_delegation_context(
             data=self.get_data(),
-            tenant_id=tenant_id,
-            user_permissions=user_context.get('permissions', [])
+            subject_context=token_claims.get('user_context'),
+            actor_context=token_claims.get('act'),
+            delegation_chain=delegation_chain
         )
+        
+        # Log delegation activity
+        self.log_delegation_activity(token_claims, actor_context, delegation_chain)
         
         return filtered_data
 ```
 
-### 5.4 Auditoria e Rastreabilidade
+### 5.5 Auditoria e Compliance com RFC 8693
 
-#### Estrutura de Audit Log
-
+#### Enhanced Audit Log Structure
 ```json
 {
   "timestamp": "2025-01-02T10:30:00Z",
-  "event_type": "mcp_request",
+  "event_type": "mcp_request_with_delegation",
   "correlation_id": "corr-uuid-67890",
   "request_id": "req-uuid-12345",
-  "client_context": {
-    "agent_id": "finance-agent-001",
-    "tenant_id": "acme-corp-12345",
-    "user_id": "user-john-doe",
-    "client_ip": "10.0.1.100"
+  
+  "token_exchange_context": {
+    "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+    "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
+    "actor_token_type": "urn:ietf:params:oauth:token-type:access_token",
+    "issued_token_type": "urn:ietf:params:oauth:token-type:access_token"
   },
+  
+  "delegation_context": {
+    "delegation_type": "agent_delegation",
+    "subject": {
+      "user_id": "user-john-doe",
+      "tenant_id": "acme-corp-12345",
+      "department": "finance"
+    },
+    "actor": {
+      "agent_id": "ai-agent-finance-001",
+      "agent_type": "financial-assistant",
+      "version": "2.1.0"
+    },
+    "delegation_chain": [
+      {
+        "delegator": "user-john-doe",
+        "delegate": "ai-agent-finance-001",
+        "scope": ["mcp:read", "mcp:write:limited"],
+        "timestamp": "2025-01-02T10:25:00Z"
+      }
+    ]
+  },
+  
   "mcp_context": {
     "server_name": "financial-data-mcp",
-    "method": "tools/list",
+    "method": "tools/call",
     "resource_accessed": "/api/v1/financial-reports",
+    "effective_permissions": ["read:financial-data"],
     "data_classification": "confidential"
   },
-  "security_context": {
-    "token_issued_at": "2025-01-02T10:25:00Z",
-    "token_expires_at": "2025-01-02T11:25:00Z",
-    "scopes": ["mcp:read", "finance:reports"],
-    "permissions_validated": true
-  },
-  "response_context": {
-    "status_code": 200,
-    "response_size_bytes": 2048,
-    "processing_time_ms": 150,
-    "records_returned": 25
+  
+  "compliance_context": {
+    "gdpr_applicable": true,
+    "data_subject": "user-john-doe",
+    "processing_purpose": "financial_analysis",
+    "legal_basis": "legitimate_interest",
+    "retention_period": "7_years"
   }
 }
 ```
 
-### 5.5 Conformidade com RFCs e Especificações
+### 5.6 Benefícios da Implementação RFC 8693
 
-#### RFC 9068 - JWT Profile for OAuth 2.0 Access Tokens
+#### Vantagens Técnicas
+- **Padronização**: Uso de especificação oficial IETF
+- **Flexibilidade**: Suporte a delegation e impersonation
+- **Segurança**: Validação rigorosa de delegation chains
+- **Auditoria**: Rastreamento completo de contexto de delegação
+- **Interoperabilidade**: Compatibilidade com outros sistemas OAuth 2.0
 
-O gateway implementa validação completa conforme RFC 9068:
+#### Casos de Uso Cobertos
+- **Agent Delegation**: AI Agent atua em nome do usuário
+- **Third-Party Delegation**: Agentes externos com contexto limitado
+- **Cross-Domain Access**: Acesso entre diferentes domínios de segurança
+- **Compliance**: Atendimento a requisitos de auditoria e governança
 
-- **Validação de Assinatura**: Verificação criptográfica do token
-- **Validação de Audience**: Confirmação que o token foi emitido para o gateway
-- **Validação de Issuer**: Verificação da origem do token
-- **Validação de Tempo**: Verificação de expiração e não-antes
+#### Conformidade com Especificações
+- **RFC 8693**: OAuth 2.0 Token Exchange
+- **RFC 9068**: JWT Profile for OAuth 2.0 Access Tokens
+- **RFC 8707**: Resource Indicators for OAuth 2.0
+- **MCP Authorization Specification**: Especificação oficial do MCP
 
-#### RFC 8707 - Resource Indicators for OAuth 2.0
+## Matriz de Decisão: Cognito vs Keycloak
 
-Implementação de Resource Indicators para binding de tokens:
-
-```http
-# Durante a solicitação do token
-POST /oauth2/token
-Content-Type: application/x-www-form-urlencoded
-
-grant_type=client_credentials
-&client_id=finance-agent-001
-&client_secret=secret
-&resource=https://gateway.agentcore.aws.com
-&scope=mcp:read mcp:write
-```
-
-#### MCP Authorization Specification
-
-Conformidade com a especificação MCP de autorização:
-
-- **Protected Resource Metadata**: Descoberta de servidores de autorização
-- **Scope Challenge Handling**: Tratamento de erros de escopo insuficiente
-- **Token Audience Binding**: Validação de audience para prevenir token passthrough
-
-### 5.6 Segurança e Isolamento de Dados
-
-#### Princípios de Isolamento
+### Arquitetura Inbound/Outbound do AgentCore Gateway
 
 ```mermaid
 graph TB
-    subgraph "Tenant Isolation Architecture"
-        subgraph "Tenant A - ACME Corp"
-            TA_AGENT[Finance Agent A]
-            TA_DATA[Financial Data A]
-            TA_MCP[MCP Instance A]
+    subgraph "Inbound Traffic - Para o AgentCore Gateway"
+        subgraph "Keycloak DCR Zone"
+            DEV_TOOLS[Ferramentas de Desenvolvimento<br/>IDEs, CLIs, Debug Tools]
+            MCP_CLIENTS[MCP Clients Diretos<br/>Kiro, Claude Desktop, etc]
+            THIRD_PARTY_DIRECT[Agentes Terceiros Diretos<br/>ChatGPT Apps, Custom Agents]
         end
         
-        subgraph "Tenant B - XYZ Inc"
-            TB_AGENT[HR Agent B]
-            TB_DATA[HR Data B]
-            TB_MCP[MCP Instance B]
-        end
-        
-        subgraph "Gateway Layer"
-            GATEWAY[AgentCore Gateway]
-            ROUTER[Context Router]
-            VALIDATOR[Token Validator]
-        end
-        
-        subgraph "Security Controls"
-            RBAC[Role-Based Access]
-            ENCRYPTION[Data Encryption]
-            AUDIT[Audit Logging]
+        subgraph "Cognito M2M Zone"
+            INTERNAL_AGENTS[AI Agents Internos<br/>via BFF ou Direto]
+            BFF_REQUESTS[Requests via BFF<br/>B2C e B2B Partners]
+            SERVICE_ACCOUNTS[Service Accounts<br/>Automação Interna]
         end
     end
     
-    TA_AGENT --> GATEWAY
-    TB_AGENT --> GATEWAY
+    subgraph "AgentCore Gateway"
+        INBOUND_AUTH[Inbound Authentication<br/>Keycloak + Cognito]
+        GATEWAY_CORE[Gateway Core<br/>Routing & Processing]
+        OUTBOUND_AUTH[Outbound Authentication<br/>Cognito M2M]
+    end
     
-    GATEWAY --> ROUTER
-    ROUTER --> VALIDATOR
+    subgraph "Outbound Traffic - Do AgentCore Gateway"
+        MCP_SERVERS[MCP Servers<br/>AgentCore Runtime]
+        EXTERNAL_APIS[APIs Externas<br/>Databases, Services]
+        AWS_SERVICES[AWS Services<br/>S3, DynamoDB, etc]
+    end
     
-    VALIDATOR --> TA_MCP
-    VALIDATOR --> TB_MCP
+    %% Inbound Flows
+    DEV_TOOLS -->|Keycloak DCR| INBOUND_AUTH
+    MCP_CLIENTS -->|Keycloak DCR| INBOUND_AUTH
+    THIRD_PARTY_DIRECT -->|Keycloak DCR| INBOUND_AUTH
     
-    TA_MCP --> TA_DATA
-    TB_MCP --> TB_DATA
+    INTERNAL_AGENTS -->|Cognito M2M| INBOUND_AUTH
+    BFF_REQUESTS -->|Cognito M2M| INBOUND_AUTH
+    SERVICE_ACCOUNTS -->|Cognito M2M| INBOUND_AUTH
     
-    VALIDATOR --> RBAC
-    VALIDATOR --> ENCRYPTION
-    VALIDATOR --> AUDIT
+    %% Gateway Processing
+    INBOUND_AUTH --> GATEWAY_CORE
+    GATEWAY_CORE --> OUTBOUND_AUTH
     
-    style GATEWAY fill:#ff9800
-    style VALIDATOR fill:#4caf50
-    style RBAC fill:#f44336
+    %% Outbound Flows
+    OUTBOUND_AUTH -->|Cognito M2M| MCP_SERVERS
+    OUTBOUND_AUTH -->|Cognito M2M| EXTERNAL_APIS
+    OUTBOUND_AUTH -->|AWS IAM/Cognito| AWS_SERVICES
+    
+    style INBOUND_AUTH fill:#ff9800
+    style GATEWAY_CORE fill:#4caf50
+    style OUTBOUND_AUTH fill:#2196f3
+    style DEV_TOOLS fill:#9c27b0
+    style MCP_CLIENTS fill:#9c27b0
+    style INTERNAL_AGENTS fill:#e91e63
+    style BFF_REQUESTS fill:#e91e63
 ```
 
-#### Controles de Segurança Implementados
+### Matriz de Decisão Detalhada: Cognito vs Keycloak
 
-1. **Isolamento de Tenant**: Dados completamente segregados por tenant_id
-2. **Validação de Contexto**: Verificação rigorosa de permissões por request
-3. **Encryption at Rest**: Dados criptografados com chaves específicas por tenant
-4. **Encryption in Transit**: TLS 1.3 para todas as comunicações
-5. **Audit Completo**: Log de todas as operações com contexto de segurança
+| Critério | Keycloak | Cognito | Justificativa |
+|----------|----------|---------|---------------|
+| **Direção de Tráfego** | **Inbound** (para Gateway) | **Inbound + Outbound** | Cognito para M2M, Keycloak para flexibilidade |
+| **Tipo de Cliente** | Externos, Desenvolvimento | Internos, Produção | Keycloak para clientes diversos, Cognito para controle |
+| **Padrão de Autenticação** | DCR, Authorization Code | Client Credentials, M2M | DCR para flexibilidade, M2M para performance |
+| **Casos de Uso** | IDEs, MCP Clients, Third-Party | Agents, BFFs, Services | Diferentes necessidades de integração |
+| **Escalabilidade** | Média (self-hosted) | Alta (managed service) | Cognito gerenciado pela AWS |
+| **Custo** | Infraestrutura própria | Pay-per-use | Modelo de custos diferente |
+| **Flexibilidade** | Alta (customização) | Média (AWS managed) | Keycloak mais customizável |
+| **Manutenção** | Alta (self-managed) | Baixa (AWS managed) | Cognito gerenciado pela AWS |
 
-## Estratégia de Autenticação
+### Decisão por Cenário de Uso
+
+#### Cenário 1: Inbound - Use Keycloak Quando:
+
+```yaml
+use_keycloak_when:
+  client_type:
+    - "development_tools"      # IDEs, CLIs, Debug tools
+    - "mcp_clients_direct"     # Kiro, Claude Desktop
+    - "third_party_agents"     # ChatGPT Apps, Custom agents
+    - "external_integrations"  # Sistemas externos não controlados
+  
+  authentication_pattern:
+    - "dynamic_client_registration"  # DCR para flexibilidade
+    - "authorization_code_flow"      # Com usuário final
+    - "pkce_required"               # Clientes públicos
+  
+  characteristics:
+    - "unknown_clients"        # Clientes não pré-registrados
+    - "diverse_client_types"   # Diferentes tipos de aplicação
+    - "user_consent_required"  # Necessita consentimento do usuário
+    - "flexible_registration"  # Registro dinâmico necessário
+  
+  traffic_direction: "inbound"  # Sempre para o Gateway
+```
+
+**Exemplo de Configuração Keycloak:**
+```yaml
+keycloak_inbound_config:
+  realm: "agentcore-external"
+  
+  dcr_settings:
+    anonymous_registration: false
+    protected_registration: true
+    software_statement_required: true
+    
+  supported_flows:
+    - "authorization_code"
+    - "client_credentials"  # Para alguns third-party
+    
+  client_policies:
+    development_tools:
+      pkce_required: true
+      redirect_uris: ["http://localhost:*", "https://localhost:*"]
+      scopes: ["mcp:read", "mcp:write", "mcp:debug"]
+      
+    third_party_agents:
+      pkce_required: true
+      redirect_uris: ["https://*.openai.com/callback", "https://*.anthropic.com/callback"]
+      scopes: ["mcp:read", "mcp:write:limited"]
+```
+
+#### Cenário 2: Inbound - Use Cognito Quando:
+
+```yaml
+use_cognito_when:
+  client_type:
+    - "internal_ai_agents"     # Agents desenvolvidos internamente
+    - "bff_applications"       # Backend for Frontend
+    - "service_accounts"       # Contas de serviço
+    - "microservices"          # Comunicação entre serviços
+  
+  authentication_pattern:
+    - "client_credentials"     # M2M authentication
+    - "service_to_service"     # Comunicação interna
+    - "token_exchange"         # RFC 8693 delegation
+  
+  characteristics:
+    - "pre_registered_clients" # Clientes conhecidos
+    - "high_volume_traffic"    # Alto volume de requests
+    - "predictable_patterns"   # Padrões previsíveis
+    - "aws_native_integration" # Integração nativa AWS
+  
+  traffic_direction: "inbound"  # Para o Gateway
+```
+
+**Exemplo de Configuração Cognito Inbound:**
+```yaml
+cognito_inbound_config:
+  user_pool_id: "us-east-1_XXXXXXXXX"
+  
+  app_clients:
+    internal_agents:
+      client_name: "internal-ai-agents"
+      generate_secret: true
+      explicit_auth_flows: ["ALLOW_CLIENT_CREDENTIALS"]
+      supported_identity_providers: ["COGNITO"]
+      
+    bff_applications:
+      client_name: "bff-applications"
+      generate_secret: true
+      explicit_auth_flows: ["ALLOW_CLIENT_CREDENTIALS"]
+      token_validity_units:
+        access_token: 1  # 1 hour
+        
+  custom_scopes:
+    - "mcp:read"
+    - "mcp:write"
+    - "agent:execute"
+    - "bff:access"
+```
+
+#### Cenário 3: Outbound - Use Sempre Cognito:
+
+```yaml
+use_cognito_outbound_always:
+  reason: "Padronização e integração AWS nativa"
+  
+  outbound_targets:
+    - "mcp_servers"           # MCPs no AgentCore Runtime
+    - "external_apis"         # APIs externas via Gateway
+    - "aws_services"          # S3, DynamoDB, etc
+    - "database_connections"  # RDS, ElastiCache
+  
+  authentication_pattern:
+    - "client_credentials"    # Sempre M2M
+    - "service_account_based" # Contas de serviço dedicadas
+    - "iam_integration"       # Integração com AWS IAM
+  
+  characteristics:
+    - "high_performance"      # Performance otimizada
+    - "aws_managed"           # Gerenciado pela AWS
+    - "scalable"              # Escalabilidade automática
+    - "cost_effective"        # Custo otimizado
+```
+
+**Exemplo de Configuração Cognito Outbound:**
+```yaml
+cognito_outbound_config:
+  user_pool_id: "us-east-1_YYYYYYYYY"  # Pool dedicado para outbound
+  
+  service_accounts:
+    gateway_to_mcp:
+      client_name: "gateway-mcp-service"
+      generate_secret: true
+      explicit_auth_flows: ["ALLOW_CLIENT_CREDENTIALS"]
+      custom_scopes: ["mcp:full_access"]
+      
+    gateway_to_external:
+      client_name: "gateway-external-service"
+      generate_secret: true
+      explicit_auth_flows: ["ALLOW_CLIENT_CREDENTIALS"]
+      custom_scopes: ["external:api_access"]
+  
+  token_settings:
+    access_token_validity: 3600  # 1 hour
+    refresh_token_validity: 0    # No refresh for M2M
+```
+
+### Fluxos de Autenticação por Direção
+
+#### Fluxo Inbound - Keycloak DCR
+
+```mermaid
+sequenceDiagram
+    participant CLIENT as Cliente Externo<br/>(IDE, Third-Party)
+    participant KC as Keycloak
+    participant AGW as AgentCore Gateway
+    
+    Note over CLIENT, AGW: Inbound Authentication - Keycloak DCR
+    CLIENT->>KC: 1. Dynamic Client Registration
+    KC->>CLIENT: 2. Client Credentials
+    CLIENT->>KC: 3. Authorization Code Flow + PKCE
+    KC->>CLIENT: 4. Access Token
+    CLIENT->>AGW: 5. Request + Access Token
+    AGW->>KC: 6. Token Validation
+    KC->>AGW: 7. Token Valid + Claims
+    AGW->>AGW: 8. Process Request
+```
+
+#### Fluxo Inbound - Cognito M2M
+
+```mermaid
+sequenceDiagram
+    participant AGENT as AI Agent/BFF
+    participant COG as Amazon Cognito
+    participant AGW as AgentCore Gateway
+    
+    Note over AGENT, AGW: Inbound Authentication - Cognito M2M
+    AGENT->>COG: 1. Client Credentials Grant
+    COG->>AGENT: 2. Access Token JWT
+    AGENT->>AGW: 3. Request + Access Token
+    AGW->>COG: 4. Token Validation
+    COG->>AGW: 5. Token Valid + Claims
+    AGW->>AGW: 6. Process Request
+```
+
+#### Fluxo Outbound - Sempre Cognito
+
+```mermaid
+sequenceDiagram
+    participant AGW as AgentCore Gateway
+    participant COG as Amazon Cognito
+    participant MCP as MCP Server/External API
+    
+    Note over AGW, MCP: Outbound Authentication - Sempre Cognito
+    AGW->>COG: 1. Service Account Credentials
+    COG->>AGW: 2. Service Access Token
+    AGW->>MCP: 3. Outbound Request + Service Token
+    MCP->>COG: 4. Token Validation (opcional)
+    COG->>MCP: 5. Token Valid
+    MCP->>AGW: 6. Response
+```
+
+### Configuração do Gateway para Dual Authentication
+
+```yaml
+# AgentCore Gateway - Dual Authentication Configuration
+gateway_authentication:
+  inbound:
+    providers:
+      keycloak:
+        enabled: true
+        realm: "agentcore-external"
+        discovery_url: "https://keycloak.example.com/auth/realms/agentcore-external/.well-known/openid-configuration"
+        client_types: ["development", "third_party", "mcp_clients"]
+        
+      cognito:
+        enabled: true
+        user_pool_id: "us-east-1_INBOUND_POOL"
+        region: "us-east-1"
+        client_types: ["internal_agents", "bff", "services"]
+    
+    routing_rules:
+      - path: "/internal/*"
+        auth_provider: "cognito"
+        
+      - path: "/third-party/*"
+        auth_provider: "keycloak"
+        
+      - path: "/development/*"
+        auth_provider: "keycloak"
+        
+      - path: "/enterprise/*"
+        auth_provider: "cognito"
+  
+  outbound:
+    provider: "cognito"  # Sempre Cognito
+    user_pool_id: "us-east-1_OUTBOUND_POOL"
+    service_accounts:
+      - name: "mcp-access"
+        client_id: "gateway-mcp-service"
+        scopes: ["mcp:full_access"]
+        
+      - name: "external-api-access"
+        client_id: "gateway-external-service"
+        scopes: ["external:api_access"]
+```
+
+### Benefícios da Abordagem Dual
+
+#### Vantagens Técnicas
+- **Especialização**: Cada sistema otimizado para seu caso de uso
+- **Performance**: Cognito para M2M, Keycloak para flexibilidade
+- **Escalabilidade**: Cognito gerenciado, Keycloak customizável
+- **Manutenção**: Redução de overhead operacional
+
+#### Vantagens de Negócio
+- **Flexibilidade**: Suporte a diversos tipos de cliente
+- **Custo**: Otimização de custos por caso de uso
+- **Compliance**: Atendimento a diferentes requisitos
+- **Evolução**: Capacidade de evoluir independentemente
+
+### Resumo da Decisão
+
+| Direção | Sistema | Quando Usar | Casos de Uso |
+|---------|---------|-------------|--------------|
+| **Inbound** | **Keycloak** | Clientes externos, desenvolvimento, third-party | IDEs, MCP Clients, ChatGPT Apps |
+| **Inbound** | **Cognito** | Clientes internos, produção, M2M | AI Agents, BFFs, Service Accounts |
+| **Outbound** | **Cognito** | Sempre (padronização) | MCPs, APIs Externas, AWS Services |
 
 ### Fluxo de Autenticação Completo - Cenários Distintos
 
@@ -1165,7 +1571,16 @@ sequenceDiagram
     AGW->>Agent: 12. Final Response
 ```
 
-### 4.1 Keycloak para Dynamic Client Registration (DCR) - MCP Clients Diretos
+## Estratégia de Autenticação Baseada em Matriz de Decisão
+
+### Resumo da Estratégia Dual
+
+Com base na matriz de decisão Cognito vs Keycloak, nossa estratégia de autenticação segue o princípio de **especialização por caso de uso**:
+
+- **Keycloak**: Inbound traffic de clientes externos e desenvolvimento
+- **Cognito**: Inbound traffic interno + Todo outbound traffic
+
+### 4.1 Keycloak para Inbound Traffic Externo (DCR)
 
 **Casos de Uso Específicos:**
 - Conectividade direta via MCP Client (como Kiro IDE)
@@ -1195,19 +1610,19 @@ O DCR é mais adequado para MCP Clients diretos pois oferece uma estratégia fle
 }
 ```
 
-### 4.2 Amazon Cognito para Comunicação Agent-Gateway (M2M)
+### 4.2 Amazon Cognito para Inbound Traffic Interno + Todo Outbound Traffic
 
 **Casos de Uso Específicos:**
-- Comunicação Agent → AgentCore Gateway
-- Comunicação Gateway → MCP Servers
-- Autenticação entre serviços internos da arquitetura
+- **Inbound**: AI Agents internos, BFFs, Service Accounts
+- **Outbound**: Comunicação Gateway → MCPs, Gateway → APIs Externas, Gateway → AWS Services
+- **Padrão**: Client Credentials Grant (RFC 6749, Seção 4.4) para M2M
+- **Token Exchange**: RFC 8693 para delegation scenarios
 
-**Justificativa para Client Credentials:**
-Para a comunicação entre agentes e o gateway, o Client Credentials Grant (RFC 6749, Seção 4.4) é mais apropriado pois:
-- Agentes atuam em nome próprio, não de usuários
-- Credenciais podem ser gerenciadas via AWS Secrets Manager
-- Identificação clara do agente através de service accounts
-- Melhor performance para comunicação M2M em alta escala
+**Justificativa para Cognito:**
+- **Inbound Interno**: Clientes conhecidos e controlados, alta performance M2M
+- **Outbound Universal**: Padronização e integração nativa AWS
+- **Escalabilidade**: Gerenciado pela AWS, auto-scaling
+- **Custo**: Pay-per-use otimizado para alto volume
 
 **Implementação Técnica:**
 - OAuth 2.0 Client Credentials Grant (RFC 6749, Seção 4.4)
@@ -1311,11 +1726,11 @@ sequenceDiagram
     end
 ```
 
-### Vantagens da Abordagem Multi-Modal:**
-- **Flexibilidade**: Diferentes métodos para diferentes tipos de terceiros
-- **Segurança**: Controle granular de permissões por cliente
-- **Auditoria**: Rastreamento completo de acessos de terceiros
-- **Escalabilidade**: Suporte a múltiplos agentes simultâneos
+### Vantagens da Abordagem Dual Especializada:
+- **Inbound Otimizado**: Keycloak para flexibilidade externa, Cognito para performance interna
+- **Outbound Padronizado**: Cognito para toda comunicação de saída (MCPs, APIs, AWS)
+- **Especialização**: Cada sistema otimizado para seu caso de uso específico
+- **Manutenção**: Redução de overhead operacional com Cognito gerenciado
 
 ## Implementação Detalhada por Cenário
 
@@ -2428,6 +2843,7 @@ graph TD
 - **RFC 6749**: The OAuth 2.0 Authorization Framework - Base para autenticação M2M
 - **RFC 7591**: OAuth 2.0 Dynamic Client Registration Protocol - DCR para MCP clients
 - **RFC 7636**: Proof Key for Code Exchange by OAuth Public Clients - PKCE obrigatório
+- **RFC 8693**: OAuth 2.0 Token Exchange - Delegation e impersonation para contexto de cliente
 - **RFC 8707**: Resource Indicators for OAuth 2.0 - Token audience binding
 - **RFC 9068**: JSON Web Token (JWT) Profile for OAuth 2.0 Access Tokens - Formato padronizado de tokens
 - **RFC 9728**: OAuth 2.0 Protected Resource Metadata - Descoberta de servidores de autorização
@@ -2530,15 +2946,22 @@ Esta arquitetura revisada fornece uma base sólida e escalável para implementa�
 - **Tenant Isolation** completo com auditoria granular por cliente
 - **Headers HTTP padronizados** para passagem de contexto entre componentes
 
-#### 3. **Conformidade com Especificações Oficiais**
+#### 3. **Matriz de Decisão Cognito vs Keycloak**
+- **Keycloak para Inbound Externo**: IDEs, MCP Clients, Third-Party Apps com DCR
+- **Cognito para Inbound Interno**: AI Agents, BFFs, Service Accounts com M2M
+- **Cognito para Todo Outbound**: Padronização para MCPs, APIs e AWS Services
+- **Especialização por Caso de Uso**: Cada sistema otimizado para seu contexto
+
+#### 4. **Conformidade com Especificações Oficiais**
 - **RFC 7591** para Dynamic Client Registration
 - **RFC 6749 Seção 4.4** para Client Credentials Grant
+- **RFC 8693** para Token Exchange e delegation scenarios
 - **RFC 8707** para Resource Indicators e token audience binding
 - **MCP Authorization Specification** para descoberta e validação de servidores
-
-#### 4. **Segurança Aprimorada**
+#### 5. **Segurança Aprimorada**
 - **Token Audience Binding** para prevenir token passthrough
 - **PKCE obrigatório** para MCP clients públicos
+- **Dual Authentication Strategy** com especialização por caso de uso
 - **Validação rigorosa de contexto** em cada request
 - **Encryption at rest e in transit** com chaves específicas por tenant
 
@@ -2546,6 +2969,7 @@ Esta arquitetura revisada fornece uma base sólida e escalável para implementa�
 
 - **Flexibilidade de Distribuição**: DCR permite que ferramentas como Kiro se registrem dinamicamente
 - **Escalabilidade M2M**: Client Credentials otimizado para comunicação de alta escala entre agentes
+- **Padronização Outbound**: Cognito para toda comunicação de saída do gateway
 - **Identificação Clara**: Service accounts e context enrichment permitem rastreabilidade completa
 - **Conformidade Regulatória**: Implementação baseada em RFCs oficiais e melhores práticas de segurança
 - **Isolamento de Dados**: Segregação completa por tenant com controles granulares
