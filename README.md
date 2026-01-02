@@ -105,49 +105,6 @@ graph TB
 - **Compliance**: Atende requisitos de segurança e conformidade regulatória
 - **Performance**: Comunicação interna de baixa latência
 - **Controle de Acesso**: Security groups e NACLs para controle granular
-
-**Implementação Técnica**:
-```mermaid
-graph TB
-    subgraph "Public Subnets"
-        AGW[AgentCore Gateway]
-        ALB[Application Load Balancer]
-    end
-    
-    subgraph "Private Subnets"
-        MCP1[Database MCP]
-        MCP2[Cache MCP]
-        MCP3[Internal API MCP]
-        
-        RDS[(Amazon RDS)]
-        REDIS[(ElastiCache Redis)]
-        API[Internal APIs]
-    end
-    
-    subgraph "VPC Endpoints"
-        S3EP[S3 VPC Endpoint]
-        SSMEP[SSM VPC Endpoint]
-    end
-    
-    Internet --> ALB
-    ALB --> AGW
-    AGW --> MCP1
-    AGW --> MCP2
-    AGW --> MCP3
-    
-    MCP1 --> RDS
-    MCP2 --> REDIS
-    MCP3 --> API
-    
-    MCP1 --> S3EP
-    MCP2 --> SSMEP
-    
-    style AGW fill:#ff9800
-    style RDS fill:#4caf50
-    style REDIS fill:#f44336
-    style API fill:#2196f3
-```
-
 #### 4. Acesso Direto via MCP Clients com DCR
 **Premissa**: Para casos que requerem conexão direta com MCPs (bypassing agents), utilizar MCP Clients autenticados via Keycloak com Dynamic Client Registration para facilitar configuração.
 
@@ -200,85 +157,339 @@ graph TB
 - Rotação automática de credenciais
 - Auditoria de permissões mensais
 
-### Matriz de Decisão Arquitetural
+### Matriz de Decisão Arquitetural por Cenário
 
 ```mermaid
 graph TD
-    subgraph "Decision Matrix"
-        D1{Direct MCP Access Needed?}
-        D2{High Volume/Low Latency?}
-        D3{Complex Business Logic?}
-        D4{External Integration?}
+    subgraph "Architectural Decision Matrix"
+        START{Qual o cenário de uso?}
         
-        D1 -->|Yes| CLIENT[MCP Client + Keycloak DCR]
-        D1 -->|No| D2
-        D2 -->|Yes| DIRECT[Direct Agent-MCP via Gateway]
-        D2 -->|No| D3
-        D3 -->|Yes| A2A[Agent-to-Agent Communication]
-        D3 -->|No| D4
-        D4 -->|Yes| GATEWAY[Gateway-mediated Integration]
-        D4 -->|No| SIMPLE[Simple Agent-MCP Pattern]
+        START -->|Desenvolvimento Interno| INTERNO[Cenário Interno]
+        START -->|Business to Consumer| B2C[Cenário B2C]
+        START -->|Business to Business| B2B[Cenário B2B]
+        
+        subgraph "Cenário Interno - Desenvolvimento"
+            INTERNO --> DEV_TEAM[Equipes de Desenvolvimento]
+            DEV_TEAM --> KEYCLOAK_DCR[Keycloak DCR<br/>Dynamic Client Registration]
+            KEYCLOAK_DCR --> DIRECT_GATEWAY[Acesso Direto<br/>AgentCore Gateway]
+            DIRECT_GATEWAY --> RUNTIME_MCP[MCPs no<br/>AgentCore Runtime]
+        end
+        
+        subgraph "Cenário B2C - Consumidor Final"
+            B2C --> CONSUMER[Aplicação do Consumidor]
+            CONSUMER --> BFF_B2C[Backend for Frontend<br/>B2C]
+            BFF_B2C --> AGENT_B2C{Agent Location?}
+            AGENT_B2C -->|High Scale| EKS_B2C[Agent no EKS]
+            AGENT_B2C -->|Prototype/POC| RUNTIME_B2C[Agent no AgentCore Runtime]
+            EKS_B2C --> GATEWAY_B2C[AgentCore Gateway]
+            RUNTIME_B2C --> GATEWAY_B2C
+            GATEWAY_B2C --> MCP_B2C[MCPs no Runtime]
+        end
+        
+        subgraph "Cenário B2B - Business Integration"
+            B2B --> PARTNER[Sistema Parceiro/Cliente]
+            PARTNER --> BFF_B2B[Backend for Frontend<br/>B2B]
+            BFF_B2B --> AGENT_B2B{Agent Complexity?}
+            AGENT_B2B -->|Complex Logic| EKS_B2B[Agent no EKS]
+            AGENT_B2B -->|Simple Logic| RUNTIME_B2B[Agent no AgentCore Runtime]
+            EKS_B2B --> DECISION_B2B{MCP Access Pattern?}
+            RUNTIME_B2B --> DECISION_B2B
+            DECISION_B2B -->|Via Gateway| GATEWAY_B2B[AgentCore Gateway]
+            DECISION_B2B -->|Direct Access| DIRECT_MCP[Direct MCP Access]
+            GATEWAY_B2B --> MCP_B2B[MCPs no Runtime]
+        end
     end
     
-    style CLIENT fill:#ff9800
-    style A2A fill:#4caf50
-    style GATEWAY fill:#2196f3
-    style SIMPLE fill:#9c27b0
+    style INTERNO fill:#4caf50
+    style B2C fill:#2196f3
+    style B2B fill:#ff9800
+    style KEYCLOAK_DCR fill:#9c27b0
+    style BFF_B2C fill:#e91e63
+    style BFF_B2B fill:#e91e63
+```
+
+### Detalhamento dos Cenários Arquiteturais
+
+#### Cenário 1: Interno - Desenvolvimento e Ferramentas
+
+```mermaid
+sequenceDiagram
+    participant DEV as Equipe de Desenvolvimento
+    participant IDE as IDE/Ferramenta
+    participant KC as Keycloak
+    participant AGW as AgentCore Gateway
+    participant MCP as MCP Server
+    
+    Note over DEV, MCP: Cenário Interno - Acesso Direto
+    DEV->>IDE: Configura ferramenta de desenvolvimento
+    IDE->>KC: Dynamic Client Registration (DCR)
+    KC->>IDE: Client Credentials
+    IDE->>KC: Authorization Code Flow + PKCE
+    KC->>IDE: Access Token
+    IDE->>AGW: Request direto com token
+    AGW->>MCP: Processa request
+    MCP->>AGW: Response
+    AGW->>IDE: Response final
+```
+
+**Características do Cenário Interno:**
+- **Usuários**: Desenvolvedores, DevOps, QA
+- **Autenticação**: Keycloak com DCR para flexibilidade
+- **Acesso**: Direto ao AgentCore Gateway
+- **MCPs**: Hospedados no AgentCore Runtime
+- **Casos de Uso**: Debugging, testes, desenvolvimento de MCPs
+
+#### Cenário 2: B2C - Aplicações Voltadas ao Consumidor
+
+```mermaid
+sequenceDiagram
+    participant USER as Usuário Final
+    participant APP as Aplicação B2C
+    participant BFF as BFF B2C
+    participant AGENT as AI Agent
+    participant AGW as AgentCore Gateway
+    participant MCP as MCP Server
+    
+    Note over USER, MCP: Cenário B2C - Via BFF
+    USER->>APP: Interação do usuário
+    APP->>BFF: Request via API
+    BFF->>BFF: Autenticação/Autorização
+    BFF->>AGENT: Request processado
+    AGENT->>AGW: MCP Request (se necessário)
+    AGW->>MCP: Processa request
+    MCP->>AGW: Response
+    AGW->>AGENT: Response
+    AGENT->>BFF: Response processada
+    BFF->>APP: Response final
+    APP->>USER: Resultado para usuário
+```
+
+**Características do Cenário B2C:**
+- **Usuários**: Consumidores finais
+- **Arquitetura**: BFF → Agent → Gateway → MCP
+- **Agent Location**: EKS (alta escala) ou AgentCore Runtime (POC)
+- **Autenticação**: Cognito para M2M entre componentes
+- **Casos de Uso**: Chatbots, assistentes virtuais, aplicações móveis
+
+#### Cenário 3: B2B - Integrações Empresariais
+
+```mermaid
+sequenceDiagram
+    participant PARTNER as Sistema Parceiro
+    participant API as API B2B
+    participant BFF as BFF B2B
+    participant AGENT as AI Agent
+    participant DECISION as Decision Point
+    participant AGW as AgentCore Gateway
+    participant MCP as MCP Server
+    
+    Note over PARTNER, MCP: Cenário B2B - Flexível
+    PARTNER->>API: API Call
+    API->>BFF: Request autenticado
+    BFF->>AGENT: Business logic request
+    AGENT->>DECISION: Avalia necessidade MCP
+    
+    alt Via Gateway
+        DECISION->>AGW: Request via Gateway
+        AGW->>MCP: Processa request
+        MCP->>AGW: Response
+        AGW->>DECISION: Response
+    else Direct Access
+        DECISION->>MCP: Direct MCP access
+        MCP->>DECISION: Direct response
+    end
+    
+    DECISION->>AGENT: Response
+    AGENT->>BFF: Processed response
+    BFF->>API: Business response
+    API->>PARTNER: Final response
+```
+
+**Características do Cenário B2B:**
+- **Usuários**: Sistemas empresariais, parceiros
+- **Arquitetura**: Flexível - com ou sem gateway
+- **Agent Location**: EKS (lógica complexa) ou AgentCore Runtime (lógica simples)
+- **Padrões de Acesso**: Via Gateway ou acesso direto aos MCPs
+- **Casos de Uso**: Integrações ERP, APIs empresariais, automação B2B
+
+### Matriz de Decisão Detalhada
+
+| Critério | Interno | B2C | B2B |
+|----------|---------|-----|-----|
+| **Autenticação** | Keycloak DCR | Cognito M2M | Cognito M2M |
+| **Ponto de Entrada** | Direto no Gateway | BFF | BFF |
+| **Agent Hosting** | N/A | EKS/Runtime | EKS/Runtime |
+| **MCP Access** | Via Gateway | Via Gateway | Gateway/Direto |
+| **Escalabilidade** | Baixa-Média | Alta | Média-Alta |
+| **Complexidade** | Baixa | Média | Alta |
+| **Latência Alvo** | < 500ms | < 200ms | < 300ms |
+| **Casos de Uso** | Dev Tools, Debug | Apps Consumer | Enterprise APIs |
+
+### Configurações por Cenário
+
+#### Configuração Interno
+```yaml
+internal_scenario:
+  authentication:
+    provider: "keycloak"
+    method: "dcr"
+    flow: "authorization_code_pkce"
+  
+  access_pattern:
+    direct_gateway: true
+    bff_required: false
+  
+  mcp_deployment:
+    location: "agentcore_runtime"
+    scaling: "minimal"
+  
+  target_users:
+    - "developers"
+    - "devops"
+    - "qa_engineers"
+```
+
+#### Configuração B2C
+```yaml
+b2c_scenario:
+  authentication:
+    provider: "cognito"
+    method: "client_credentials"
+    flow: "m2m"
+  
+  architecture:
+    bff_required: true
+    agent_location: "eks_or_runtime"
+    gateway_access: true
+  
+  mcp_deployment:
+    location: "agentcore_runtime"
+    scaling: "auto"
+  
+  performance_targets:
+    latency: "< 200ms"
+    throughput: "high"
+    availability: "99.9%"
+```
+
+#### Configuração B2B
+```yaml
+b2b_scenario:
+  authentication:
+    provider: "cognito"
+    method: "client_credentials"
+    flow: "m2m"
+  
+  architecture:
+    bff_required: true
+    agent_location: "eks_or_runtime"
+    gateway_access: "flexible"
+  
+  mcp_deployment:
+    location: "agentcore_runtime"
+    scaling: "demand_based"
+    direct_access: "optional"
+  
+  integration_patterns:
+    - "api_gateway"
+    - "event_driven"
+    - "batch_processing"
 ```
 
 
 
-## Arquitetura de Alto Nível
+## Arquitetura de Alto Nível - Cenários de Uso
 
 ```mermaid
 graph TB
-    subgraph "AI Agents Layer"
-        POC[POC Agents<br/>AgentCore Runtime]
-        PROD[Production Agents<br/>Amazon EKS]
+    subgraph "Cenário Interno - Desenvolvimento"
+        DEV_TOOLS[Ferramentas de Desenvolvimento<br/>IDEs, CLIs, Debug Tools]
+        KC_INTERNAL[Keycloak<br/>DCR]
+        AGW_INTERNAL[AgentCore Gateway<br/>Acesso Direto]
+        MCP_INTERNAL[MCP Servers<br/>AgentCore Runtime]
     end
     
-    subgraph "Gateway Layer"
-        AGW[AgentCore Gateway<br/>MCP Orchestration]
+    subgraph "Cenário B2C - Consumer Applications"
+        CONSUMER_APPS[Aplicações B2C<br/>Mobile, Web, Chatbots]
+        BFF_B2C[BFF B2C<br/>Consumer API Layer]
+        AGENTS_B2C[AI Agents<br/>EKS ou AgentCore Runtime]
+        AGW_B2C[AgentCore Gateway<br/>MCP Orchestration]
+        MCP_B2C[MCP Servers<br/>AgentCore Runtime]
     end
     
-    subgraph "MCP Servers Layer"
-        MCP1[Database MCP<br/>AgentCore Runtime]
-        MCP2[API Integration MCP<br/>AgentCore Runtime]
-        MCP3[Custom MCP<br/>AgentCore Runtime]
+    subgraph "Cenário B2B - Enterprise Integration"
+        ENTERPRISE[Sistemas Empresariais<br/>ERP, CRM, APIs]
+        BFF_B2B[BFF B2B<br/>Enterprise API Layer]
+        AGENTS_B2B[AI Agents<br/>EKS ou AgentCore Runtime]
+        DECISION_B2B{Gateway ou<br/>Acesso Direto?}
+        AGW_B2B[AgentCore Gateway<br/>Opcional]
+        MCP_B2B[MCP Servers<br/>AgentCore Runtime]
     end
     
-    subgraph "Authentication Layer"
-        KC[Keycloak<br/>DCR]
-        COG[Amazon Cognito<br/>M2M]
+    subgraph "Camada de Autenticação"
+        KC[Keycloak<br/>DCR para Interno]
+        COG[Amazon Cognito<br/>M2M para B2C/B2B]
     end
     
-    subgraph "AWS Services"
-        EKS[Amazon EKS]
-        BR[Amazon Bedrock]
-        VPC[Amazon VPC]
-        IAM[AWS IAM]
+    subgraph "Infraestrutura AWS"
+        EKS[Amazon EKS<br/>Agents Produção]
+        RUNTIME[AgentCore Runtime<br/>MCPs e Agents POC]
+        BR[Amazon Bedrock<br/>LLM Services]
     end
     
-    POC --> AGW
-    PROD --> AGW
-    AGW --> MCP1
-    AGW --> MCP2
-    AGW --> MCP3
+    %% Fluxos Cenário Interno
+    DEV_TOOLS --> KC_INTERNAL
+    KC_INTERNAL --> AGW_INTERNAL
+    AGW_INTERNAL --> MCP_INTERNAL
     
-    AGW -.-> KC
-    AGW --> COG
+    %% Fluxos Cenário B2C
+    CONSUMER_APPS --> BFF_B2C
+    BFF_B2C --> AGENTS_B2C
+    AGENTS_B2C --> AGW_B2C
+    AGW_B2C --> MCP_B2C
     
-    PROD --> EKS
-    AGW --> BR
-    EKS --> VPC
-    EKS --> IAM
+    %% Fluxos Cenário B2B
+    ENTERPRISE --> BFF_B2B
+    BFF_B2B --> AGENTS_B2B
+    AGENTS_B2B --> DECISION_B2B
+    DECISION_B2B -->|Via Gateway| AGW_B2B
+    DECISION_B2B -->|Direto| MCP_B2B
+    AGW_B2B --> MCP_B2B
     
-    style POC fill:#e1f5fe
-    style PROD fill:#f3e5f5
-    style AGW fill:#fff3e0
-    style KC fill:#e8f5e8
-    style COG fill:#e8f5e8
+    %% Conexões com Infraestrutura
+    KC_INTERNAL -.-> KC
+    BFF_B2C -.-> COG
+    BFF_B2B -.-> COG
+    
+    AGENTS_B2C -.-> EKS
+    AGENTS_B2B -.-> EKS
+    MCP_INTERNAL -.-> RUNTIME
+    MCP_B2C -.-> RUNTIME
+    MCP_B2B -.-> RUNTIME
+    
+    AGENTS_B2C -.-> BR
+    AGENTS_B2B -.-> BR
+    
+    style DEV_TOOLS fill:#4caf50
+    style CONSUMER_APPS fill:#2196f3
+    style ENTERPRISE fill:#ff9800
+    style BFF_B2C fill:#e91e63
+    style BFF_B2B fill:#e91e63
+    style KC_INTERNAL fill:#9c27b0
 ```
+
+### Comparativo dos Cenários
+
+| Aspecto | Interno | B2C | B2B |
+|---------|---------|-----|-----|
+| **Complexidade** | Baixa | Média | Alta |
+| **Usuários** | Desenvolvedores | Consumidores | Empresas |
+| **Autenticação** | Keycloak DCR | Cognito M2M | Cognito M2M |
+| **BFF** | Não necessário | Obrigatório | Obrigatório |
+| **Agent Location** | N/A | EKS/Runtime | EKS/Runtime |
+| **Gateway** | Sempre | Sempre | Opcional |
+| **Escalabilidade** | Baixa | Alta | Variável |
+| **Latência** | Tolerante | Crítica | Moderada |
 
 ## Componentes Principais
 
@@ -298,7 +509,128 @@ O **Amazon Bedrock AgentCore Gateway** atua como o componente central da arquite
 - Autorização de entrada e saída integrada
 - Isolamento de sessão com microVMs dedicadas
 
-### 2. MCP Servers (AgentCore Runtime)
+### 2. Backend for Frontend (BFF) - Cenários B2C e B2B
+
+#### Arquitetura BFF para Diferentes Cenários
+
+```mermaid
+graph TB
+    subgraph "BFF Architecture Pattern"
+        subgraph "B2C BFF Layer"
+            BFF_MOBILE[Mobile BFF<br/>iOS/Android Optimized]
+            BFF_WEB[Web BFF<br/>Browser Optimized]
+            BFF_CHAT[Chatbot BFF<br/>Conversation Optimized]
+        end
+        
+        subgraph "B2B BFF Layer"
+            BFF_API[API BFF<br/>REST/GraphQL]
+            BFF_WEBHOOK[Webhook BFF<br/>Event-Driven]
+            BFF_BATCH[Batch BFF<br/>Bulk Operations]
+        end
+        
+        subgraph "Shared Services"
+            AUTH_SERVICE[Authentication Service]
+            RATE_LIMITER[Rate Limiting]
+            CACHE_LAYER[Caching Layer]
+            MONITORING[Monitoring & Logging]
+        end
+        
+        subgraph "AI Agents Layer"
+            AGENT_CONSUMER[Consumer Agents<br/>Personalization Focus]
+            AGENT_BUSINESS[Business Agents<br/>Integration Focus]
+        end
+    end
+    
+    %% B2C Connections
+    BFF_MOBILE --> AUTH_SERVICE
+    BFF_WEB --> AUTH_SERVICE
+    BFF_CHAT --> AUTH_SERVICE
+    
+    BFF_MOBILE --> RATE_LIMITER
+    BFF_WEB --> RATE_LIMITER
+    BFF_CHAT --> RATE_LIMITER
+    
+    BFF_MOBILE --> AGENT_CONSUMER
+    BFF_WEB --> AGENT_CONSUMER
+    BFF_CHAT --> AGENT_CONSUMER
+    
+    %% B2B Connections
+    BFF_API --> AUTH_SERVICE
+    BFF_WEBHOOK --> AUTH_SERVICE
+    BFF_BATCH --> AUTH_SERVICE
+    
+    BFF_API --> CACHE_LAYER
+    BFF_WEBHOOK --> CACHE_LAYER
+    BFF_BATCH --> CACHE_LAYER
+    
+    BFF_API --> AGENT_BUSINESS
+    BFF_WEBHOOK --> AGENT_BUSINESS
+    BFF_BATCH --> AGENT_BUSINESS
+    
+    %% Shared Services
+    AUTH_SERVICE --> MONITORING
+    RATE_LIMITER --> MONITORING
+    CACHE_LAYER --> MONITORING
+    
+    style BFF_MOBILE fill:#2196f3
+    style BFF_WEB fill:#2196f3
+    style BFF_CHAT fill:#2196f3
+    style BFF_API fill:#ff9800
+    style BFF_WEBHOOK fill:#ff9800
+    style BFF_BATCH fill:#ff9800
+```
+
+#### Responsabilidades dos BFFs
+
+##### BFF B2C - Consumer-Focused
+```yaml
+b2c_bff_responsibilities:
+  authentication:
+    - "User session management"
+    - "Social login integration"
+    - "Token refresh handling"
+  
+  data_transformation:
+    - "Mobile-optimized responses"
+    - "Pagination for mobile"
+    - "Image resizing/optimization"
+  
+  personalization:
+    - "User preference caching"
+    - "Recommendation filtering"
+    - "A/B testing integration"
+  
+  performance:
+    - "Response compression"
+    - "CDN integration"
+    - "Client-specific caching"
+```
+
+##### BFF B2B - Enterprise-Focused
+```yaml
+b2b_bff_responsibilities:
+  integration:
+    - "Protocol translation (REST/SOAP/GraphQL)"
+    - "Data format conversion"
+    - "Legacy system adaptation"
+  
+  security:
+    - "API key management"
+    - "Rate limiting per tenant"
+    - "Audit logging"
+  
+  business_logic:
+    - "Tenant-specific rules"
+    - "Business process orchestration"
+    - "Compliance validation"
+  
+  reliability:
+    - "Circuit breaker patterns"
+    - "Retry mechanisms"
+    - "Bulk operation handling"
+```
+
+### 3. MCP Servers (AgentCore Runtime)
 
 #### Fluxo de Comunicação MCP
 
@@ -836,33 +1168,238 @@ Para a comunicação entre agentes e o gateway, o Client Credentials Grant (RFC 
 - **Segurança Otimizada**: Credenciais gerenciadas centralmente para agentes, registro dinâmico para clientes
 - **Escalabilidade**: Cognito otimizado para M2M em alta escala, Keycloak para flexibilidade de registro
 
-## Implementação Detalhada
+## Implementação Detalhada por Cenário
 
-### 5.1 Configuração do AgentCore Gateway
+### 5.1 Configuração Cenário Interno - Desenvolvimento
+
+#### Keycloak para DCR (Dynamic Client Registration)
+```yaml
+# Keycloak Configuration for Internal Scenario
+keycloak_internal:
+  realm: "development-realm"
+  dcr_endpoint: "/auth/realms/development-realm/clients-registrations/openid-connect"
+  
+  client_registration:
+    anonymous_registration: false
+    protected_registration: true
+    software_statement_required: true
+  
+  supported_flows:
+    - "authorization_code"
+    - "client_credentials"
+  
+  pkce_required: true
+  code_challenge_methods:
+    - "S256"
+  
+  scopes:
+    - "mcp:read"
+    - "mcp:write" 
+    - "mcp:debug"
+    - "gateway:admin"
+```
+
+#### Configuração de Acesso Direto ao Gateway
+```yaml
+# Direct Gateway Access for Internal Users
+internal_gateway_config:
+  direct_access: true
+  authentication_method: "oauth2_bearer"
+  
+  rate_limiting:
+    requests_per_minute: 1000
+    burst_capacity: 100
+  
+  allowed_operations:
+    - "tools/list"
+    - "tools/call"
+    - "resources/list"
+    - "resources/read"
+    - "prompts/list"
+    - "prompts/get"
+  
+  debug_features:
+    request_tracing: true
+    response_logging: true
+    performance_metrics: true
+```
+
+### 5.2 Configuração Cenário B2C - Consumer Applications
+
+#### BFF B2C Configuration
+```yaml
+# B2C BFF Configuration
+b2c_bff:
+  deployment:
+    platform: "kubernetes"
+    replicas: 3
+    auto_scaling:
+      min_replicas: 2
+      max_replicas: 20
+      cpu_threshold: 70
+  
+  api_gateway:
+    rate_limiting:
+      anonymous: 100/hour
+      authenticated: 1000/hour
+    
+    cors:
+      allowed_origins: ["https://*.myapp.com"]
+      allowed_methods: ["GET", "POST"]
+      allowed_headers: ["Authorization", "Content-Type"]
+  
+  caching:
+    redis_cluster: true
+    ttl_default: 300  # 5 minutes
+    ttl_user_data: 3600  # 1 hour
+  
+  monitoring:
+    metrics_enabled: true
+    tracing_enabled: true
+    log_level: "INFO"
+```
+
+#### Agent Configuration for B2C
+```yaml
+# B2C Agent Configuration
+b2c_agents:
+  deployment_strategy:
+    primary: "agentcore_runtime"  # For POC/MVP
+    production: "eks"  # For scale
+  
+  agent_types:
+    - name: "customer-support"
+      runtime: "agentcore"
+      scaling: "auto"
+      max_instances: 10
+      
+    - name: "product-recommendation"
+      runtime: "eks"
+      scaling: "predictive"
+      max_instances: 50
+  
+  performance_targets:
+    response_time: "< 200ms"
+    availability: "99.9%"
+    throughput: "1000 rps"
+```
+
+### 5.3 Configuração Cenário B2B - Enterprise Integration
+
+#### BFF B2B Configuration
+```yaml
+# B2B BFF Configuration
+b2b_bff:
+  deployment:
+    platform: "kubernetes"
+    replicas: 2
+    auto_scaling:
+      min_replicas: 1
+      max_replicas: 10
+      cpu_threshold: 80
+  
+  api_management:
+    versioning: true
+    documentation: "openapi_3.0"
+    rate_limiting:
+      per_tenant: true
+      default_limit: "10000/day"
+    
+    authentication:
+      methods: ["api_key", "oauth2", "mutual_tls"]
+      token_validation: "cognito"
+  
+  integration_patterns:
+    - "request_response"
+    - "event_driven"
+    - "batch_processing"
+  
+  data_transformation:
+    formats: ["json", "xml", "csv"]
+    validation: "json_schema"
+    sanitization: true
+```
+
+#### Agent Configuration for B2B
+```yaml
+# B2B Agent Configuration
+b2b_agents:
+  deployment_strategy:
+    simple_logic: "agentcore_runtime"
+    complex_logic: "eks"
+  
+  agent_types:
+    - name: "integration-processor"
+      runtime: "eks"
+      scaling: "manual"
+      resources:
+        cpu: "2"
+        memory: "4Gi"
+      
+    - name: "data-transformer"
+      runtime: "agentcore"
+      scaling: "auto"
+      max_instances: 5
+  
+  mcp_access_patterns:
+    gateway_mediated:
+      - "external_apis"
+      - "database_queries"
+    
+    direct_access:
+      - "file_processing"
+      - "batch_operations"
+```
+
+### 5.4 Configuração Multi-Cenário do AgentCore Gateway
 
 ```yaml
-# Configuração exemplo do Gateway
+# AgentCore Gateway Multi-Scenario Configuration
 gateway_config:
+  scenarios:
+    internal:
+      authentication: "keycloak"
+      access_pattern: "direct"
+      rate_limiting: "developer_tier"
+      
+    b2c:
+      authentication: "cognito_m2m"
+      access_pattern: "via_bff"
+      rate_limiting: "consumer_tier"
+      
+    b2b:
+      authentication: "cognito_m2m"
+      access_pattern: "flexible"
+      rate_limiting: "enterprise_tier"
+  
   mcp_servers:
     - name: "database-mcp"
       runtime: "agentcore"
-      auth_method: "cognito_m2m"
-      scopes: ["read:database", "write:database"]
-    
+      scenarios: ["internal", "b2c", "b2b"]
+      
     - name: "api-integration-mcp"
       runtime: "agentcore"
-      source_api: "https://api.example.com/openapi.json"
-      auth_method: "cognito_m2m"
-      scopes: ["read:api"]
-
-  authentication:
-    cognito:
-      user_pool_id: "us-east-1_XXXXXXXXX"
-      client_id: "gateway-client-id"
-    
-    keycloak:
-      realm: "mcp-realm"
-      dcr_endpoint: "https://keycloak.example.com/auth/realms/mcp-realm/clients-registrations/openid-connect"
+      scenarios: ["b2c", "b2b"]
+      
+    - name: "development-mcp"
+      runtime: "agentcore"
+      scenarios: ["internal"]
+  
+  routing_rules:
+    internal:
+      path_prefix: "/internal"
+      auth_required: true
+      debug_enabled: true
+      
+    b2c:
+      path_prefix: "/consumer"
+      auth_required: true
+      caching_enabled: true
+      
+    b2b:
+      path_prefix: "/enterprise"
+      auth_required: true
+      audit_logging: true
 ```
 
 ### 5.2 Configuração do EKS para Produção
@@ -1657,80 +2194,6 @@ graph TD
 - **Cross-Region Replication**: Replicação seletiva baseada em criticidade
 - **Lifecycle Policies**: Políticas de ciclo de vida regionais
 - **Compression at Rest**: Compressão de dados em repouso
-
-## Roadmap de Implementação
-
-```mermaid
-gantt
-    title Roadmap de Implementação - Fundação MCP & AI Agents Multi-Região
-    dateFormat  YYYY-MM-DD
-    section Fase 1: Fundação Single-Region
-    Setup AgentCore Gateway           :active, f1-1, 2025-01-02, 1w
-    Configuração Cognito             :f1-2, after f1-1, 1w
-    Deploy MCP Servers               :f1-3, after f1-2, 1w
-    Ambiente POC                     :f1-4, after f1-3, 1w
-    
-    section Fase 2: Produção Single-Region
-    Configuração EKS                 :f2-1, after f1-4, 1w
-    Implementação Keycloak           :f2-2, after f2-1, 1w
-    Migração Agents EKS              :f2-3, after f2-2, 1w
-    Setup Monitoramento              :f2-4, after f2-3, 1w
-    
-    section Fase 3: Multi-Região
-    Região Secundária Setup          :f3-1, after f2-4, 1w
-    Cross-Region Replication         :f3-2, after f3-1, 1w
-    Latency Optimization             :f3-3, after f3-2, 1w
-    Failover Automation              :f3-4, after f3-3, 1w
-    
-    section Fase 4: Otimização Global
-    Global Load Balancing            :f4-1, after f3-4, 1w
-    Multi-Region Caching             :f4-2, after f4-1, 1w
-    Cost Optimization                :f4-3, after f4-2, 1w
-    Performance Tuning               :f4-4, after f4-3, 1w
-    
-    section Fase 5: Governança
-    Políticas Segurança              :f5-1, after f4-4, 1w
-    Compliance Multi-Região          :f5-2, after f5-1, 1w
-    Documentação                     :f5-3, after f5-2, 1w
-    Treinamento                      :f5-4, after f5-3, 1w
-```
-
-### Detalhamento das Fases
-
-### Fase 1: Fundação Single-Region (Semanas 1-4)
-- [ ] Setup do AgentCore Gateway na região primária
-- [ ] Configuração básica do Cognito
-- [ ] Deploy de MCP servers de exemplo
-- [ ] Ambiente de POC funcional
-- [ ] Baseline de métricas de latência
-
-### Fase 2: Produção Single-Region (Semanas 5-8)
-- [ ] Configuração do cluster EKS na região primária
-- [ ] Implementação do Keycloak
-- [ ] Migração de agents para EKS
-- [ ] Configuração de monitoramento e alertas
-- [ ] Estabelecimento de SLAs de latência
-
-### Fase 3: Multi-Região (Semanas 9-12)
-- [ ] Setup da região secundária (EU-West-1)
-- [ ] Configuração de cross-region replication
-- [ ] Implementação de otimizações de latência
-- [ ] Configuração de failover automático
-- [ ] Testes de disaster recovery
-
-### Fase 4: Otimização Global (Semanas 13-16)
-- [ ] Implementação de global load balancing
-- [ ] Setup de caching multi-região
-- [ ] Otimização de custos cross-region
-- [ ] Fine-tuning de performance
-- [ ] Implementação de circuit breakers
-
-### Fase 5: Governança (Semanas 17-20)
-- [ ] Políticas de segurança multi-região
-- [ ] Compliance e data residency
-- [ ] Documentação completa multi-região
-- [ ] Treinamento de equipes em operações globais
-- [ ] Runbooks para operações multi-região
 
 ## Referências Técnicas
 
