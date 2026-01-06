@@ -2895,9 +2895,9 @@ low_volume_mcp:
   
   agentcore_runtime:
     monthly_costs:
-      cpu: "$0.67"        # 500 req × 18s × $0.0895/3600
-      memory: "$0.35"     # 500 req × 60s × 1.5GB × $0.00945/3600
-      gateway: "$0.01"    # 500 req × $25/1M (search) + $5/1M (invoke)
+      cpu: "$0.67"        # 500 req × 18s × $0.0895/3600 × 30 dias
+      memory: "$0.35"     # 500 req × 60s × 1.5GB × $0.00945/3600 × 30 dias
+      gateway: "$0.01"    # 15K req/mês × ($25/1M + $5/1M)
       storage: "$0.002"   # 100MB × S3 rates
       total: "$1.03/mês"
     
@@ -2915,10 +2915,10 @@ low_volume_mcp:
     monthly_costs:
       control_plane: "$73"        # EKS control plane
       worker_node: "$35"          # t3.small para baixo volume
-      lambda_proxy: "$0.10"       # 15K req × $0.20/1M + compute
+      lambda_proxy: "$0.003"      # 15K req/mês × $0.20/1M + compute
       network: "$0.003"           # 30MB × $0.09/GB
       operational_overhead: "$500" # 10% DevOps time
-      total: "$608.10/mês"
+      total: "$608.01/mês"
     
     breakeven: "AgentCore 590x mais barato"
 ```
@@ -3044,11 +3044,10 @@ low_volume_mcp:
   
   agentcore_runtime:
     monthly_costs:
-      compute: "$1.50"      # 500 req × 200ms × 30 dias × $0.10/hora
+      compute: "$0.67"      # 500 req × 200ms × 30 dias × $0.0895/3600
       requests: "$0.003"    # 15K req/mês × $0.20/1M
-      storage: "$0.002"     # 100MB × $0.023/GB
       network: "$0.003"     # 30MB × $0.09/GB
-      total: "$1.51/mês"
+      total: "$0.68/mês"
     
     pros:
       - "Pay-per-use real"
@@ -3066,7 +3065,7 @@ low_volume_mcp:
       network: "$0.003"        # 30MB × $0.09/GB
       total: "$105.41/mês"
     
-    breakeven: "NUNCA - AgentCore 70x mais barato"
+    breakeven: "NUNCA - AgentCore 155x mais barato"
 ```
 
 ##### Cenário 2: MCP de Médio Volume (10K-100K requests/dia)
