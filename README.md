@@ -2862,9 +2862,9 @@ graph TB
     
     subgraph "EKS + Lambda Proxy - Hybrid"
         subgraph "Custos EKS + Lambda"
-            EKS_CONTROL[EKS Control Plane<br/>$73/mês ($0.10/hora)]
+            EKS_CONTROL[EKS Control Plane<br/>$73/mês - $0.10/hora]
             EKS_NODES[Worker Nodes<br/>$35-150/mês por node]
-            LAMBDA_PROXY[Lambda Proxy<br/>$0.20/1M requests + $0.0000166667/GB-s]
+            LAMBDA_PROXY[Lambda Proxy<br/>$0.20/1M requests + compute]
             EKS_STORAGE[EBS Storage<br/>$0.10/GB-mês]
         end
         
