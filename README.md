@@ -2917,8 +2917,7 @@ low_volume_mcp:
       worker_node: "$35"          # t3.small para baixo volume
       lambda_proxy: "$0.003"      # 15K req/mês × $0.20/1M + compute
       network: "$0.003"           # 30MB × $0.09/GB
-      operational_overhead: "$500" # 10% DevOps time
-      total: "$608.01/mês"
+      total: "$108.01/mês"
     
     breakeven: "AgentCore 590x mais barato"
 ```
@@ -2954,8 +2953,7 @@ medium_volume_mcp:
       lambda_proxy: "$30"         # 1.5M req + compute time
       network: "$2.70"            # 3GB × $0.09/GB
       load_balancer: "$16.20"     # ALB
-      operational_overhead: "$800" # 15% DevOps time
-      total: "$1,026.90/mês"
+      total: "$226.90/mês"
     
     breakeven: "AgentCore 3x mais barato"
 ```
