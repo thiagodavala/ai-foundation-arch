@@ -989,8 +989,8 @@ graph TB
     
     subgraph "Input Tokens (RFC 8693)"
         COMPOSITE_TOKEN[Composite JWT Token]
-        SUBJECT_CLAIMS[Subject Claims<br/>(User Context)]
-        ACTOR_CLAIMS[Actor Claims<br/>(Agent Context)]
+        SUBJECT_CLAIMS[Subject Claims<br/>User Context]
+        ACTOR_CLAIMS[Actor Claims<br/>Agent Context]
     end
     
     subgraph "Output Context"
