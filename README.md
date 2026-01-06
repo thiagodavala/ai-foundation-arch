@@ -2897,9 +2897,8 @@ low_volume_mcp:
     monthly_costs:
       cpu: "$0.67"        # 500 req × 18s × $0.0895/3600 × 30 dias
       memory: "$0.35"     # 500 req × 60s × 1.5GB × $0.00945/3600 × 30 dias
-      gateway: "$0.01"    # 15K req/mês × ($25/1M + $5/1M)
-      storage: "$0.002"   # 100MB × S3 rates
-      total: "$1.03/mês"
+      gateway: "$0.45"    # 15K req/mês × ($25/1M + $5/1M)
+      total: "$1.47/mês"
     
     pros:
       - "Pay-per-use real"
@@ -2917,9 +2916,10 @@ low_volume_mcp:
       worker_node: "$35"          # t3.small para baixo volume
       lambda_proxy: "$0.003"      # 15K req/mês × $0.20/1M + compute
       network: "$0.003"           # 30MB × $0.09/GB
-      total: "$108.01/mês"
+      operational_overhead: "$500" # 10% DevOps time
+      total: "$608.01/mês"
     
-    breakeven: "AgentCore 590x mais barato"
+    breakeven: "AgentCore 414x mais barato ($1.47 vs $608)"
 ```
 
 ##### Cenário 2: MCP de Médio Volume (10K-100K requests/dia)
@@ -2938,8 +2938,7 @@ medium_volume_mcp:
       cpu: "$100.31"      # 1.5M req × 15s × $0.0895/3600
       memory: "$118.13"   # 1.5M req × 45s × 2GB × $0.00945/3600
       gateway: "$112.50"  # 1.5M search + 3M invoke operations
-      storage: "$0.023"   # 1GB × S3 rates
-      total: "$330.96/mês"
+      total: "$330.94/mês"
     
     considerations:
       - "Custo cresce com uso real de recursos"
@@ -2953,9 +2952,10 @@ medium_volume_mcp:
       lambda_proxy: "$30"         # 1.5M req + compute time
       network: "$2.70"            # 3GB × $0.09/GB
       load_balancer: "$16.20"     # ALB
-      total: "$226.90/mês"
+      operational_overhead: "$800" # 15% DevOps time
+      total: "$1,026.90/mês"
     
-    breakeven: "AgentCore 3x mais barato"
+    breakeven: "AgentCore 3.1x mais barato ($331 vs $1,027)"
 ```
 
 ##### Cenário 3: MCP de Alto Volume (> 500K requests/dia)
@@ -2974,8 +2974,7 @@ high_volume_mcp:
       cpu: "$745.83"      # 30M req × 10s × $0.0895/3600
       memory: "$1,968.75" # 30M req × 30s × 2.5GB × $0.00945/3600
       gateway: "$900"     # 30M search + 60M invoke operations
-      storage: "$0.23"    # 10GB × S3 rates
-      total: "$3,614.81/mês"
+      total: "$3,614.58/mês"
     
     limitations:
       - "Custo alto em escala extrema"
@@ -2992,16 +2991,16 @@ high_volume_mcp:
       operational_overhead: "$1500" # 25% DevOps time
       total: "$2,686.20/mês"
     
-    breakeven: "EKS+Lambda 1.3x mais barato em volume extremo"
+    breakeven: "EKS+Lambda 1.35x mais barato ($2,686 vs $3,615)"
 ```
 
 #### Resumo Executivo Atualizado
 
 ##### Breakeven Points por Volume:
-- **< 1K requests/dia**: AgentCore Runtime **590x mais barato** ($1.03 vs $608/mês)
-- **1K-100K requests/dia**: AgentCore Runtime **3-50x mais barato**
-- **100K-800K requests/dia**: AgentCore Runtime **ainda mais barato**
-- **> 800K requests/dia**: EKS + Lambda Proxy **1.3x mais barato** ($2,686 vs $3,615/mês)
+- **< 1K requests/dia**: AgentCore Runtime **414x mais barato** ($1.47 vs $608/mês)
+- **1K-100K requests/dia**: AgentCore Runtime **1.8-3.1x mais barato**
+- **100K-800K requests/dia**: AgentCore Runtime **ainda vantajoso**
+- **> 800K requests/dia**: EKS + Lambda Proxy **1.35x mais barato** ($2,686 vs $3,615/mês)
 
 ##### Total Cost of Ownership (TCO) - 12 meses:
 - **AgentCore Runtime**: $6,000/ano (cenário médio volume)
@@ -3078,11 +3077,10 @@ medium_volume_mcp:
   
   agentcore_runtime:
     monthly_costs:
-      compute: "$225"       # 1.5M req × 300ms × $0.10/hora
+      compute: "$100.31"    # 1.5M req × 300ms × $0.0895/3600
       requests: "$0.30"     # 1.5M req × $0.20/1M
-      storage: "$0.023"     # 1GB × $0.023/GB
       network: "$2.70"      # 3GB × $0.09/GB
-      total: "$228.02/mês"
+      total: "$103.31/mês"
     
     considerations:
       - "Cold starts podem impactar UX"
@@ -3096,7 +3094,7 @@ medium_volume_mcp:
       load_balancer: "$16.20"  # ALB
       total: "$191.13/mês"
     
-    breakeven: "~40K requests/dia - EKS começa a compensar"
+    breakeven: "AgentCore 1.85x mais barato ($103 vs $191)"
 ```
 
 ##### Cenário 3: MCP de Alto Volume (> 500K requests/dia)
@@ -3111,11 +3109,10 @@ high_volume_mcp:
   
   agentcore_runtime:
     monthly_costs:
-      compute: "$1875"      # 30M req × 150ms × $0.10/hora
+      compute: "$1118.75"   # 30M req × 150ms × $0.0895/3600
       requests: "$6"        # 30M req × $0.20/1M
-      storage: "$0.23"      # 10GB × $0.023/GB
       network: "$27"        # 30GB × $0.09/GB
-      total: "$1908.23/mês"
+      total: "$1151.75/mês"
     
     limitations:
       - "Cold starts frequentes"
@@ -3131,7 +3128,7 @@ high_volume_mcp:
       monitoring: "$20"        # CloudWatch enhanced
       total: "$436.20/mês"
     
-    breakeven: "~200K requests/dia - EKS 4.4x mais barato"
+    breakeven: "EKS 2.6x mais barato ($436 vs $1,152)"
 ```
 
 #### Matriz de Decisão por Volume e Padrão de Uso
@@ -3329,10 +3326,10 @@ for scenario in scenarios:
 ##### Principais Descobertas
 
 **Breakeven Points por Volume:**
-- **< 1K requests/dia**: AgentCore Runtime **590x mais barato** ($1.03 vs $608/mês)
-- **1K-100K requests/dia**: AgentCore Runtime **3-50x mais barato**
-- **100K-800K requests/dia**: AgentCore Runtime **ainda mais barato**
-- **> 800K requests/dia**: EKS + Lambda Proxy **1.3x mais barato** ($2,686 vs $3,615/mês)
+- **< 1K requests/dia**: AgentCore Runtime **414x mais barato** ($1.47 vs $608/mês)
+- **1K-100K requests/dia**: AgentCore Runtime **1.8-3.1x mais barato**
+- **100K-800K requests/dia**: AgentCore Runtime **ainda vantajoso**
+- **> 800K requests/dia**: EKS + Lambda Proxy **1.35x mais barato** ($2,686 vs $3,615/mês)
 
 **Total Cost of Ownership (TCO) - 12 meses:**
 - **AgentCore Runtime**: $6,000/ano (cenário médio volume)
