@@ -2865,7 +2865,6 @@ graph TB
             EKS_CONTROL[EKS Control Plane<br/>$73/mês - $0.10/hora]
             EKS_NODES[Worker Nodes<br/>$35-150/mês por node]
             LAMBDA_PROXY[Lambda Proxy<br/>$0.20/1M requests + compute]
-            EKS_STORAGE[EBS Storage<br/>$0.10/GB-mês]
         end
         
         subgraph "Características"
@@ -2917,10 +2916,9 @@ low_volume_mcp:
       control_plane: "$73"        # EKS control plane
       worker_node: "$35"          # t3.small para baixo volume
       lambda_proxy: "$0.10"       # 15K req × $0.20/1M + compute
-      storage: "$0.01"            # 100MB × $0.10/GB
       network: "$0.003"           # 30MB × $0.09/GB
       operational_overhead: "$500" # 10% DevOps time
-      total: "$608.11/mês"
+      total: "$608.10/mês"
     
     breakeven: "AgentCore 590x mais barato"
 ```
@@ -2954,7 +2952,6 @@ medium_volume_mcp:
       control_plane: "$73"
       worker_nodes: "$105"        # 3x t3.small para HA
       lambda_proxy: "$30"         # 1.5M req + compute time
-      storage: "$0.10"            # 1GB × $0.10/GB
       network: "$2.70"            # 3GB × $0.09/GB
       load_balancer: "$16.20"     # ALB
       operational_overhead: "$800" # 15% DevOps time
@@ -2991,12 +2988,11 @@ high_volume_mcp:
       control_plane: "$73"
       worker_nodes: "$420"        # 12x t3.medium para performance
       lambda_proxy: "$600"        # 30M req + significant compute
-      storage: "$1"               # 10GB × $0.10/GB
       network: "$27"              # 30GB × $0.09/GB
       load_balancer: "$16.20"
       monitoring: "$50"           # Enhanced monitoring
       operational_overhead: "$1500" # 25% DevOps time
-      total: "$2,687.20/mês"
+      total: "$2,686.20/mês"
     
     breakeven: "EKS+Lambda 1.3x mais barato em volume extremo"
 ```
@@ -3007,7 +3003,7 @@ high_volume_mcp:
 - **< 1K requests/dia**: AgentCore Runtime **590x mais barato** ($1.03 vs $608/mês)
 - **1K-100K requests/dia**: AgentCore Runtime **3-50x mais barato**
 - **100K-800K requests/dia**: AgentCore Runtime **ainda mais barato**
-- **> 800K requests/dia**: EKS + Lambda Proxy **1.3x mais barato** ($2,687 vs $3,615/mês)
+- **> 800K requests/dia**: EKS + Lambda Proxy **1.3x mais barato** ($2,686 vs $3,615/mês)
 
 ##### Total Cost of Ownership (TCO) - 12 meses:
 - **AgentCore Runtime**: $6,000/ano (cenário médio volume)
@@ -3067,9 +3063,8 @@ low_volume_mcp:
     monthly_costs:
       control_plane: "$72"     # $0.10/hora × 24h × 30 dias
       worker_node: "$33.41"    # t3.medium × 24h × 30 dias
-      storage: "$0.01"         # 100MB × $0.10/GB
       network: "$0.003"        # 30MB × $0.09/GB
-      total: "$105.42/mês"
+      total: "$105.41/mês"
     
     breakeven: "NUNCA - AgentCore 70x mais barato"
 ```
@@ -3100,10 +3095,9 @@ medium_volume_mcp:
     monthly_costs:
       control_plane: "$72"
       worker_nodes: "$100.23"  # 3x t3.medium para HA
-      storage: "$0.10"         # 1GB × $0.10/GB
       network: "$2.70"         # 3GB × $0.09/GB
       load_balancer: "$16.20"  # ALB
-      total: "$191.23/mês"
+      total: "$191.13/mês"
     
     breakeven: "~40K requests/dia - EKS começa a compensar"
 ```
@@ -3135,11 +3129,10 @@ high_volume_mcp:
     monthly_costs:
       control_plane: "$72"
       worker_nodes: "$301"     # 9x t3.medium para performance
-      storage: "$1"            # 10GB × $0.10/GB
       network: "$27"           # 30GB × $0.09/GB
       load_balancer: "$16.20"
       monitoring: "$20"        # CloudWatch enhanced
-      total: "$437.20/mês"
+      total: "$436.20/mês"
     
     breakeven: "~200K requests/dia - EKS 4.4x mais barato"
 ```
@@ -3342,7 +3335,7 @@ for scenario in scenarios:
 - **< 1K requests/dia**: AgentCore Runtime **590x mais barato** ($1.03 vs $608/mês)
 - **1K-100K requests/dia**: AgentCore Runtime **3-50x mais barato**
 - **100K-800K requests/dia**: AgentCore Runtime **ainda mais barato**
-- **> 800K requests/dia**: EKS + Lambda Proxy **1.3x mais barato** ($2,687 vs $3,615/mês)
+- **> 800K requests/dia**: EKS + Lambda Proxy **1.3x mais barato** ($2,686 vs $3,615/mês)
 
 **Total Cost of Ownership (TCO) - 12 meses:**
 - **AgentCore Runtime**: $6,000/ano (cenário médio volume)
