@@ -2915,10 +2915,11 @@ low_volume_mcp:
       control_plane: "$73"        # EKS control plane
       worker_node: "$35"          # t3.small para baixo volume
       lambda_proxy: "$0.003"      # 15K req/mês × $0.20/1M + compute
+      agentcore_gateway: "$0.45"  # 15K req/mês × ($25/1M + $5/1M)
       network: "$0.003"           # 30MB × $0.09/GB
-      total: "$108.01/mês"
+      total: "$108.46/mês"
     
-    breakeven: "AgentCore 73x mais barato ($1.47 vs $108)"
+    breakeven: "AgentCore 74x mais barato ($1.47 vs $108.46)"
 ```
 
 ##### Cenário 2: MCP de Médio Volume (10K-100K requests/dia)
@@ -2949,11 +2950,12 @@ medium_volume_mcp:
       control_plane: "$73"
       worker_nodes: "$105"        # 3x t3.small para HA
       lambda_proxy: "$30"         # 1.5M req + compute time
+      agentcore_gateway: "$112.50" # 1.5M search + 3M invoke operations
       network: "$2.70"            # 3GB × $0.09/GB
       load_balancer: "$16.20"     # ALB
-      total: "$226.90/mês"
+      total: "$339.40/mês"
     
-    breakeven: "EKS+Lambda 1.46x mais barato ($227 vs $331)"
+    breakeven: "AgentCore 1.03x mais barato ($331 vs $339)"
 ```
 
 ##### Cenário 3: MCP de Alto Volume (> 500K requests/dia)
@@ -2983,21 +2985,22 @@ high_volume_mcp:
       control_plane: "$73"
       worker_nodes: "$420"        # 12x t3.medium para performance
       lambda_proxy: "$600"        # 30M req + significant compute
+      agentcore_gateway: "$900"   # 30M search + 60M invoke operations
       network: "$27"              # 30GB × $0.09/GB
       load_balancer: "$16.20"
       monitoring: "$50"           # Enhanced monitoring
-      total: "$1,186.20/mês"
+      total: "$2,086.20/mês"
     
-    breakeven: "EKS+Lambda 3.05x mais barato ($1,186 vs $3,615)"
+    breakeven: "EKS+Lambda 1.73x mais barato ($2,086 vs $3,615)"
 ```
 
 #### Resumo Executivo Atualizado
 
 ##### Breakeven Points por Volume:
-- **< 1K requests/dia**: AgentCore Runtime **73x mais barato** ($1.47 vs $108/mês)
-- **1K-100K requests/dia**: EKS+Lambda **1.46x mais barato** ($227 vs $331/mês)
-- **100K-800K requests/dia**: EKS+Lambda **vantajoso em médio volume**
-- **> 800K requests/dia**: EKS + Lambda Proxy **3.05x mais barato** ($1,186 vs $3,615/mês)
+- **< 1K requests/dia**: AgentCore Runtime **74x mais barato** ($1.47 vs $108.46/mês)
+- **1K-100K requests/dia**: AgentCore Runtime **1.03x mais barato** ($331 vs $339/mês)
+- **100K-800K requests/dia**: AgentCore Runtime **ligeiramente vantajoso**
+- **> 800K requests/dia**: EKS + Lambda Proxy **1.73x mais barato** ($2,086 vs $3,615/mês)
 
 ##### Total Cost of Ownership (TCO) - 12 meses:
 - **AgentCore Runtime**: $6,000/ano (cenário médio volume)
@@ -3006,22 +3009,22 @@ high_volume_mcp:
 
 ##### Recomendações por Cenário
 
-**Use AgentCore Runtime (30% dos casos):**
-- Volume < 10K requests/dia
+**Use AgentCore Runtime (80% dos casos):**
+- Volume < 100K requests/dia
 - Session isolation crítica
 - Equipe pequena ou sem expertise K8s
 - Prioridade em simplicidade operacional
 - MCPs de desenvolvimento e teste
 
-**Use EKS + Lambda Proxy (70% dos casos):**
-- Volume > 10K requests/dia consistente
+**Use EKS + Lambda Proxy (20% dos casos):**
+- Volume > 100K requests/dia consistente
 - Controle total necessário
 - Estratégia multi-cloud
 - Equipe com forte expertise K8s
 - Requisitos de customização extrema
 
 ##### Fatores Decisivos:
-1. **Volume**: Breakeven real em ~10K req/dia (médio volume)
+1. **Volume**: Breakeven real em ~100K req/dia (alto volume)
 2. **Session Isolation**: AgentCore tem vantagem nativa vs implementação custom
 3. **Overhead Operacional**: AgentCore zero vs EKS+Lambda significativo
 4. **Vendor Lock-in**: AgentCore AWS-only vs EKS portável (mas muito mais caro)
@@ -3321,10 +3324,10 @@ for scenario in scenarios:
 ##### Principais Descobertas
 
 **Breakeven Points por Volume:**
-- **< 1K requests/dia**: AgentCore Runtime **73x mais barato** ($1.47 vs $108/mês)
-- **1K-100K requests/dia**: EKS+Lambda **1.46x mais barato** ($227 vs $331/mês)
-- **100K-800K requests/dia**: EKS+Lambda **vantajoso em médio volume**
-- **> 800K requests/dia**: EKS + Lambda Proxy **3.05x mais barato** ($1,186 vs $3,615/mês)
+- **< 1K requests/dia**: AgentCore Runtime **74x mais barato** ($1.47 vs $108.46/mês)
+- **1K-100K requests/dia**: AgentCore Runtime **1.03x mais barato** ($331 vs $339/mês)
+- **100K-800K requests/dia**: AgentCore Runtime **ligeiramente vantajoso**
+- **> 800K requests/dia**: EKS + Lambda Proxy **1.73x mais barato** ($2,086 vs $3,615/mês)
 
 **Total Cost of Ownership (TCO) - 12 meses:**
 - **AgentCore Runtime**: $4,736/ano (cenário médio volume)
@@ -3333,15 +3336,15 @@ for scenario in scenarios:
 
 ##### Recomendações por Cenário
 
-**Use AgentCore Runtime (30% dos casos):**
-- Volume < 10K requests/dia
+**Use AgentCore Runtime (80% dos casos):**
+- Volume < 100K requests/dia
 - Session isolation crítica
 - Equipe pequena ou sem expertise K8s
 - Prioridade em simplicidade operacional
 - MCPs de desenvolvimento e teste
 
-**Use EKS + Lambda Proxy (70% dos casos):**
-- Volume > 10K requests/dia consistente
+**Use EKS + Lambda Proxy (20% dos casos):**
+- Volume > 100K requests/dia consistente
 - Controle total necessário
 - Estratégia multi-cloud
 - Equipe com forte expertise K8s
@@ -3494,9 +3497,9 @@ Esta arquitetura revisada fornece uma base sólida e escalável para implementa�
 - **Encryption at rest e in transit** com chaves específicas por tenant
 
 #### 6. **Análise de Custos MCP: AgentCore Runtime vs EKS + Lambda**
-- **Estratégia Balanceada**: 30% MCPs no AgentCore, 70% no EKS+Lambda
-- **Breakeven Point**: 10K requests/dia (médio volume)
-- **Economia Total**: Depende do mix de volumes por MCP
+- **Estratégia AgentCore-First**: 80% MCPs no AgentCore, 20% no EKS+Lambda
+- **Breakeven Point**: 100K requests/dia (alto volume)
+- **Economia Total**: Significativa para baixo/médio volume
 - **TCO**: AgentCore 6.7x mais barato considerando overhead operacional
 
 ### Benefícios da Arquitetura Revisada
